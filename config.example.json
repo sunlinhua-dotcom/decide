@@ -1,0 +1,7 @@
+{
+  "base": "https://decide.example.com",
+  "key": "paste the server key here / 把服务端密钥贴在这里",
+  "ssh": "",
+  "media_root": "",
+  "gen_cmd": []
+}

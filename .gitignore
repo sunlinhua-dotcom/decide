@@ -1,0 +1,10 @@
+# runtime data: database, generated key, uploaded media
+data/
+*.db
+*.db-wal
+*.db-shm
+.env
+__pycache__/
+*.pyc
+.DS_Store
+node_modules/

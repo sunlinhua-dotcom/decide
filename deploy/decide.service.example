@@ -1,0 +1,17 @@
+# systemd unit for the decide server. Copy to /etc/systemd/system/decide.service,
+# adjust User / paths, then: sudo systemctl daemon-reload && sudo systemctl enable --now decide
+[Unit]
+Description=decide board
+After=network.target
+
+[Service]
+User=decide
+WorkingDirectory=/opt/decide
+EnvironmentFile=/opt/decide/.env
+ExecStart=/usr/bin/python3 /opt/decide/server/decide_server.py
+Restart=always
+RestartSec=2
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

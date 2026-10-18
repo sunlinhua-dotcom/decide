@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="light only">
+<meta name="theme-color" content="#f6f5f1">
+<title>decide</title>
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@1&display=swap">
+<style>
+:root { --paper: #f6f5f1; --ink: #141414; --ink-3: #8c8981; --line: #d9d6cd; --red: #d33f2a; color-scheme: light; }
+* { box-sizing: border-box; }
+html, body { background: var(--paper); }
+body { margin: 0; min-height: 100dvh; display: flex; align-items: center; justify-content: center; padding: 24px 16px; color: var(--ink); font-family: "PingFang SC", "Hiragino Sans GB", system-ui, -apple-system, sans-serif; -webkit-font-smoothing: antialiased; }
+form { width: 100%; max-width: 300px; text-align: center; }
+.mark { font-family: "Instrument Serif", "Iowan Old Style", serif; font-style: italic; font-size: 52px; line-height: 1; letter-spacing: -.01em; margin: 0 0 34px; font-weight: 400; }
+input { width: 100%; height: 56px; border: 0; border-bottom: 1px solid var(--line); background: none; text-align: center; font-size: 26px; letter-spacing: .5em; text-indent: .5em; color: var(--ink); font-family: ui-monospace, "SF Mono", Menlo, monospace; border-radius: 0; outline: none; transition: border-color .15s; }
+input:focus { border-bottom-color: var(--ink); }
+input::placeholder { color: var(--ink-3); letter-spacing: .1em; text-indent: 0; font-size: 15px; font-family: inherit; }
+button { margin-top: 26px; height: 46px; width: 100%; border-radius: 999px; border: 0; background: var(--ink); color: var(--paper); font: inherit; font-size: 15px; letter-spacing: .1em; cursor: pointer; }
+button:disabled { opacity: .4; cursor: default; }
+.err { color: var(--red); font-size: 13px; min-height: 1.4em; margin-top: 14px; }
+</style>
+</head>
+<body>
+<form id="f" autocomplete="on">
+  <h1 class="mark">decide</h1>
+  <input id="pw" name="password" type="password" autocomplete="current-password" placeholder="密码或密钥" aria-label="密码" autofocus>
+  <button type="submit" id="go">进入</button>
+  <div class="err" id="err" role="alert"></div>
+</form>
+<script>
+(function () {
+  var f = document.getElementById('f'), pw = document.getElementById('pw'), err = document.getElementById('err'), go = document.getElementById('go');
+  function login(body) {
+    err.textContent = ''; go.disabled = true;
+    return fetch('/login', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { if (!r.ok) throw new Error(j.error || ('登录失败（' + r.status + '）')); }); })
+      .then(function () { location.replace(location.pathname + location.search); })
+      .catch(function (e) { err.textContent = e.message; go.disabled = false; pw.select(); });
+  }
+  var m = location.hash.match(/^#k=([^&]+)/);
+  if (m) { history.replaceState(null, '', location.pathname + location.search); login({ k: decodeURIComponent(m[1]) }); }
+  f.addEventListener('submit', function (e) { e.preventDefault(); if (!pw.value.trim()) { pw.focus(); return; } var v = pw.value.trim(); login({ p: v, k: v }); });
+})();
+</script>
+</body>
+</html>

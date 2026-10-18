@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="light only">
+<meta name="theme-color" content="#f6f5f1">
+<meta name="apple-mobile-web-app-title" content="decide">
+<title>decide</title>
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="icon" href="/icon-512.png" type="image/png" sizes="512x512">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Noto+Serif+SC:wght@500&display=swap">
+<link rel="stylesheet" href="/style.css?v=19">
+</head>
+<body>
+<header class="bar">
+  <a class="mark" href="/" data-nav>decide<i class="conn" id="conn" title="连接断了，正在重连"></i></a>
+  <nav class="tabs" id="tabs" aria-label="项目"></nav>
+  <div class="right">
+    <span class="left-n" id="left"></span>
+    <a href="/grid" data-nav data-k="grid">四宫格</a>
+    <a href="/done" data-nav data-k="done">已定</a>
+    <a href="/help">帮助</a>
+  </div>
+</header>
+<main id="main"></main>
+
+<div class="lb" id="lb" role="dialog" aria-modal="true" aria-label="看大图" hidden>
+  <div class="lb-top">
+    <span class="t" id="lb-t"></span>
+    <button class="lb-x" id="lb-close" type="button" title="关闭（Esc）" aria-label="关闭"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+  </div>
+  <button class="lb-nav" id="lb-prev" type="button" title="上一张（←）" aria-label="上一张"><svg viewBox="0 0 24 24"><path d="M15 4l-8 8 8 8"/></svg></button>
+  <button class="lb-nav nx" id="lb-next" type="button" title="下一张（→）" aria-label="下一张"><svg viewBox="0 0 24 24"><path d="M9 4l8 8-8 8"/></svg></button>
+  <div class="lb-stage" id="lb-stage"></div>
+  <div class="lb-foot" id="lb-foot"></div>
+</div>
+<div class="toast" id="toast" hidden><span id="toast-t"></span><button id="toast-b" hidden>撤回</button></div>
+<script src="/app.js?v=19"></script>
+</body>
+</html>

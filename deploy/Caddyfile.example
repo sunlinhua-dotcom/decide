@@ -1,0 +1,9 @@
+# Caddy in front of decide: automatic HTTPS, everything proxied to the Python server.
+# Set DECIDE_PUBLIC=https://decide.example.com and DECIDE_TRUST_PROXY=1 in .env.
+decide.example.com {
+	header X-Robots-Tag "noindex, nofollow"
+	reverse_proxy 127.0.0.1:8796 {
+		# long polling: send each response as soon as it is ready
+		flush_interval -1
+	}
+}

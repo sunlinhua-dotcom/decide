@@ -1,0 +1,1052 @@
+#!/usr/bin/env python3
+"""decide：把要用户拍板的事推到 decide 决策板，等用户在网页上点完再拿回答案。
+
+常用：
+  decide ask  -p 项目 -t "N23 浴室远景" --before 旧.jpg --after 新.mp4 --products … --crash … --fix …
+  decide pick -p 项目 -t "01 封面 · 挑底图" --choice "A::a.jpg::说明" --choice "B::b.jpg::说明"
+  decide q "用哪个数据库" "SQLite::零运维、单机够用" "Postgres::要多机写入" --rec 1   # 纯文字选择题，网页画成大卡片
+  decide wait <id> …        # 等答案，放后台跑；0=都定了 3=有被撤销的 124=超时
+完整说明：decide help
+"""
+import argparse
+import concurrent.futures as cf
+import json
+import os
+import re
+import secrets
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+import webbrowser
+
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+CONF_PATH = os.path.expanduser(os.environ.get("DECIDE_CONFIG") or "~/.config/decide/config.json")
+SESSION = os.environ.get("DECIDE_SESSION") or os.environ.get("CLAUDE_CODE_SESSION_ID") or ""
+LOCK_DIR = os.path.expanduser("~/.cache/decide")
+SVG_EXT = {".svg"}
+IMG_EXT = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".tif", ".tiff", ".bmp", ".gif"}
+VID_EXT = {".mp4", ".mov", ".m4v", ".webm"}
+GOOD = {"通过", "可以", "对", "行", "ok", "OK", "保留", "用这个", "采用", "继续", "对，继续", "对，开始", "开始", "确认"}
+BAD = {"返修", "打回", "不行", "重出", "重做", "不对", "否", "要改", "不对，要改", "改一下"}
+WEB_EDGE, THUMB_EDGE = 1600, 480
+
+# 有些代理 / 网络下域名的 IPv6 地址连不通，Python 会先试 IPv6 等满超时（每次可达 20 秒）。IPv4 排前面。
+_getaddrinfo = socket.getaddrinfo
+
+
+def _v4_first(*args, **kw):
+    return sorted(_getaddrinfo(*args, **kw), key=lambda r: r[0] != socket.AF_INET)
+
+
+socket.getaddrinfo = _v4_first
+
+HELP = """\
+decide —— 把要用户拍板的事推到 decide 决策板网页，等用户点完再拿回答案
+
+推卡片
+  decide ask  -p <项目> -t <标题> [选项…]     审片 / 问一句（默认两个选项：通过、返修）
+  decide pick -p <项目> -t <标题> --choice "A::图::说明" …   挑一个（选项和图绑定）
+  decide q "<问题>" "<选项>::<一句代价>" …     快问：任何选择题都用它，网页把每个选项画成大卡片
+    -p <项目>                默认取 $DECIDE_PROJECT，没有就用当前 git 主仓库名（worktree 也认主仓库），再没有用目录名
+    --sub <一句话>            问题下面的补充说明
+    --svg <图.svg>            附一张示意图（流程 / 架构 / 对比），可重复；SVG 秒出、字清楚，比生图快
+    选项第三段带图            "A::代价::a.svg" —— 每个选项配一张小示意图
+    选项第三段写「@画面」      "A::代价::@一只橘猫坐在窗台上" —— 卡片先上板，后台调你配的出图命令
+                             （DECIDE_GEN_CMD，可配多条一起抢）出图，出一张补一张；出不来照样能按文字选
+    --gen-style <风格>        换掉默认的「简洁扁平插画、浅色背景、不要文字」风格前缀
+    --rec <N>                标第 N 个为推荐（也可在标签前写「（推荐）」）
+    --multi / --no-note / --fact 键=值 / --wait 同下
+
+  共用选项
+    -p, --project <slug>     项目代号，小写字母数字和连字符，如 film-ep2；第一次用会自动建项目
+    --pname <名字>           项目显示名，如「第二集 · 问答」（只需第一次给）
+    -t, --title <标题>       镜号或主题 + 一句话，如「N23 浴室远景」「EGO 要不要现在升级」——不许只写镜号
+    --sub <一句话>           要用户定什么，如「这一版能不能进成片」
+    --before <文件>[::标签[::说明]]   上一版（默认标签「上一版」）
+    --after  <文件>[::标签[::说明]]   这一版（默认标签「这一版」）
+    --media  <文件>[::标签[::说明]]   其他图或视频，可重复
+    --products <文字>        画面里有哪些产品 / 主体
+    --crash <文字>           上次崩在哪里
+    --fix <文字>             这次怎么改的
+    --file <路径>            成片 / 母版路径（显示在信息栏）
+    --fact 键=值             其他信息，可重复
+    --opt <标签>[::说明]      自定义选项，可重复；「通过 / 返修」等会自动配绿色 / 红色
+    --multi                  允许多选
+    --no-note                不要备注框
+    --note-hint <文字>        备注框提示语
+    --priority <数字>        越大越靠前（默认 0）
+    --batch <名字>           同一批卡片的标记
+    --source <文字>          显示是谁推的（默认 Claude · 当前目录名）
+    --spec <文件.json>       整张卡片用 JSON 给（media 里写 path 本地路径即可）
+    --wait                   推完直接等答案（等同于接着跑 decide wait）
+  输出第一行是卡片 id，第二行是编号和网址。编号是网页上的大号数字，用户在对话里会用它说「07 返修」。
+
+拿答案（推荐：会话监听）
+  decide listen [--timeout 秒] [--grace 秒]
+    后台挂着；本会话推的卡片里，用户一点（通过 / 返修 / 选图）就返回并打印答案，然后要重新挂。
+    监听没开时点的答案不会丢，下次 listen 一启动就返回。同一会话只跑一个，重复启动会直接退出。
+    会话按环境变量 CLAUDE_CODE_SESSION_ID 区分（可用 DECIDE_SESSION 覆盖）。
+  decide wait <id> … [--any] [--timeout 秒] [--grace 秒] [--json]
+    只等指定卡片（派出去的执行方用）。默认等到全部定完；--any 有一张定了就返回。
+    答案确定后多等 --grace 秒（默认 8）给用户撤回。退出码：0 全部定了；3 有卡片被撤销；124 超时；2 出错。
+  decide resolve <编号|id> <选项> [备注…]
+    用户在对话里说了「07 返修，喷嘴太粗」时，替他在网页上记下（选项可写 通过 / 返修 / A / 第几个）。
+  decide chat [编号…]
+    用户在对话里直接提意见时用：不带编号 = 本会话所有待定卡；带编号 = 只清这几张。网页上随即消失，记成「在对话里说」。
+
+查看与管理
+  decide ls [-p 项目] [-s pending|answered|cancelled|all] [-n 条数]
+  decide show <id>                 整张卡片 JSON
+  decide cancel <id> …             撤销还没定的卡片
+  decide project ls | add <slug> [名字] | rename <slug> <名字> | archive <slug> | unarchive <slug>
+  decide open [项目 …]             浏览器打开（自动登录）；给多个项目就开四宫格
+  decide key --copy                把密钥复制到剪贴板（手机粘贴登录用）
+  decide doctor                    检查配置、服务、上传通道
+
+配置（环境变量优先于 ~/.config/decide/config.json，见 config.example.json）
+  DECIDE_BASE    决策板地址，默认 http://127.0.0.1:8796
+  DECIDE_KEY     密钥；不给时在本仓库 data/key 里找（同一台机器上跑的服务第一次启动会生成）
+  DECIDE_SSH     媒体走 rsync 时的目标（user@host，或 local 表示服务就在本机）；不设就走 HTTP 上传
+  DECIDE_MEDIA_ROOT   rsync 目标目录（服务的 DECIDE_MEDIA）
+  DECIDE_GEN_CMD 「@画面」出图命令模板，见 README
+
+写卡片的规矩
+  标题 = 镜号或主题 + 一句话；审片卡信息栏写清画面里有什么、上次崩在哪、这次怎么改；
+  前后两版用 --before / --after；候选用 pick 的 A/B/C/D；一张卡只问一件事。
+"""
+
+
+# ---------------- 配置与网络 ----------------
+def conf():
+    c = {"base": "http://127.0.0.1:8796", "ssh": "", "media_root": "", "key": "", "gen_cmd": ""}
+    try:
+        with open(CONF_PATH) as f:
+            c.update(json.load(f))
+    except FileNotFoundError:
+        pass
+    c["base"] = os.environ.get("DECIDE_BASE", c["base"]).rstrip("/")
+    c["key"] = os.environ.get("DECIDE_KEY", c["key"])
+    c["ssh"] = os.environ.get("DECIDE_SSH", c["ssh"])  # user@host 走 rsync；local = 服务在本机，直接拷；空 = HTTP 上传
+    c["media_root"] = os.environ.get("DECIDE_MEDIA_ROOT", c["media_root"])
+    c["gen_cmd"] = os.environ.get("DECIDE_GEN_CMD", c["gen_cmd"])
+    if not c["key"]:
+        local_key = os.path.join(os.environ.get("DECIDE_HOME") or os.path.join(ROOT, "data"), "key")
+        try:
+            with open(local_key) as f:
+                c["key"] = f.read().strip()
+        except OSError:
+            pass
+    if not c["key"]:
+        die(f"没有密钥：设 DECIDE_KEY，或写进 {CONF_PATH} 的 key（本机服务第一次启动会生成 data/key）")
+    return c
+
+
+def die(msg, code=2):
+    print("decide：" + msg, file=sys.stderr)
+    sys.exit(code)
+
+
+class ApiError(Exception):
+    def __init__(self, code, msg):
+        super().__init__(msg)
+        self.code = code
+
+
+def http(c, method, path, body=None, timeout=70, data=None, ctype=None):
+    headers = {"X-Decide-Key": c["key"], "User-Agent": "decide-cli/1"}
+    if body is not None:
+        data = json.dumps(body, ensure_ascii=False).encode()
+        headers["Content-Type"] = "application/json"
+    elif ctype:
+        headers["Content-Type"] = ctype
+    req = urllib.request.Request(c["base"] + path, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        try:
+            msg = json.loads(e.read()).get("error") or str(e)
+        except Exception:  # noqa: BLE001
+            msg = str(e)
+        raise ApiError(e.code, msg)
+
+
+# ---------------- 媒体 ----------------
+def split_spec(s, default_label=""):
+    parts = s.split("::")
+    path = os.path.expanduser(parts[0])
+    label = parts[1] if len(parts) > 1 and parts[1] else default_label
+    caption = "::".join(parts[2:]) if len(parts) > 2 else ""
+    return path, label, caption
+
+
+def img_tool():
+    """出缩略图用什么：macOS 自带 sips，其他系统用 Pillow；都没有就原图直传（不出缩略图）。"""
+    if shutil.which("sips"):
+        return "sips"
+    try:
+        import PIL.Image  # noqa: F401
+        return "pil"
+    except ImportError:
+        return None
+
+
+def sips_dims(path):
+    if img_tool() == "pil":
+        from PIL import Image
+        with Image.open(path) as im:
+            return im.size
+    out = subprocess.run(["sips", "-g", "pixelWidth", "-g", "pixelHeight", path],
+                         capture_output=True, text=True).stdout
+    w = re.search(r"pixelWidth: (\d+)", out)
+    h = re.search(r"pixelHeight: (\d+)", out)
+    if not w or not h:
+        raise RuntimeError(f"读不出图片尺寸：{path}")
+    return int(w.group(1)), int(h.group(1))
+
+
+def svg_prep(src, dst):
+    """SVG 原样上传（几 KB、秒出、字清楚）。去掉脚本和事件属性，从 viewBox / width / height 读尺寸。"""
+    with open(src, encoding="utf-8") as f:
+        t = f.read()
+    if "<svg" not in t[:4000]:
+        raise RuntimeError(f"不是 SVG：{src}")
+    t = re.sub(r"<script\b[^>]*>.*?</script\s*>", "", t, flags=re.S | re.I)
+    t = re.sub(r"<script\b[^>]*/>", "", t, flags=re.I)
+    t = re.sub(r"\son[a-z]+\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s>]+)", "", t, flags=re.I)
+    t = re.sub(r"(href\s*=\s*[\"'])\s*javascript:[^\"']*", r"\1#", t, flags=re.I)
+    if not re.search(r"<svg\b[^>]*\sxmlns=", t):
+        t = re.sub(r"<svg\b", '<svg xmlns="http://www.w3.org/2000/svg"', t, count=1)
+    head = re.search(r"<svg\b[^>]*>", t).group(0)
+    vb = re.search(r'viewBox\s*=\s*["\']\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)[\s,]+([\d.]+)', head)
+    num = lambda k: (lambda m: float(m.group(1)) if m else 0)(re.search(k + r'\s*=\s*["\']([\d.]+)(px)?["\']', head))
+    w, h = (float(vb.group(1)), float(vb.group(2))) if vb else (num("width"), num("height"))
+    if not w or not h:
+        raise RuntimeError(f"SVG 缺 viewBox 或宽高：{src}")
+    if not vb:
+        t = t.replace(head, head[:-1] + f' viewBox="0 0 {w:g} {h:g}">', 1)
+    with open(dst, "w", encoding="utf-8") as f:
+        f.write(t)
+    return round(w), round(h)
+
+
+def to_jpeg(src, dst, edge, q, dims):
+    if img_tool() == "pil":
+        from PIL import Image, ImageOps
+        with Image.open(src) as im:
+            im = ImageOps.exif_transpose(im).convert("RGB")
+            if edge and max(dims) > edge:
+                im.thumbnail((edge, edge))
+            im.save(dst, "JPEG", quality=q)
+        return
+    args = ["sips", "-s", "format", "jpeg", "-s", "formatOptions", str(q)]
+    if edge and max(dims) > edge:
+        args += ["-Z", str(edge)]
+    args += [src, "--out", dst]
+    r = subprocess.run(args, capture_output=True, text=True)
+    if r.returncode or not os.path.exists(dst):
+        raise RuntimeError(f"转图失败：{src}\n{r.stderr.strip()}")
+
+
+def prep_one(i, item, project, cid, tmp):
+    """返回 (media 规格, [要上传的文件名])。图片出三档：web 1600、缩略 480、原图（原尺寸 JPEG）。"""
+    path, label, caption = item["path"], item.get("label", ""), item.get("caption", "")
+    if not os.path.isfile(path):
+        raise RuntimeError(f"文件不存在：{path}")
+    ext = os.path.splitext(path)[1].lower()
+    base = f"/media/{project}/{cid}/"
+    n = i + 1
+    if ext in VID_EXT:
+        name = f"v{n}{'.mp4' if ext in ('.mp4', '.m4v') else ext}"
+        shutil.copyfile(path, os.path.join(tmp, name))
+        size = os.path.getsize(path) / 1e6
+        if size > 80:
+            print(f"decide：提醒，{os.path.basename(path)} 有 {size:.0f} MB，手机上会加载很慢，最好给预览版", file=sys.stderr)
+        return {"kind": "video", "src": base + name, "label": label, "caption": caption}, [name]
+    if ext in SVG_EXT:
+        name = f"s{n}.svg"
+        w, h = svg_prep(path, os.path.join(tmp, name))
+        return {"kind": "img", "src": base + name, "w": w, "h": h, "label": label, "caption": caption}, [name]
+    if ext not in IMG_EXT:
+        raise RuntimeError(f"不认识的文件类型：{path}")
+    if img_tool() is None:  # 没有 sips 也没有 Pillow：原图直传，网页按原图显示
+        name = f"m{n}{ext if ext in ('.jpg', '.jpeg', '.png', '.webp', '.gif') else '.jpg'}"
+        shutil.copyfile(path, os.path.join(tmp, name))
+        return {"kind": "img", "src": base + name, "label": label, "caption": caption}, [name]
+    w, h = sips_dims(path)
+    o, web, th = f"m{n}_o.jpg", f"m{n}.jpg", f"m{n}_t.jpg"
+    if ext in (".jpg", ".jpeg") and os.path.getsize(path) <= 8e6:
+        shutil.copyfile(path, os.path.join(tmp, o))
+    else:
+        to_jpeg(path, os.path.join(tmp, o), None, 92, (w, h))
+    to_jpeg(path, os.path.join(tmp, web), WEB_EDGE, 82, (w, h))
+    to_jpeg(path, os.path.join(tmp, th), THUMB_EDGE, 78, (w, h))
+    return ({"kind": "img", "src": base + web, "thumb": base + th, "orig": base + o,
+             "w": w, "h": h, "label": label, "caption": caption}, [o, web, th])
+
+
+def upload(c, project, cid, tmp, names):
+    if c["ssh"] and c["media_root"]:
+        dest = f"{c['media_root']}/{project}/{cid}/"
+        target = dest if c["ssh"] == "local" else f"{c['ssh']}:{dest}"
+        r = subprocess.run(["rsync", "-a", "--mkpath", "--chmod=D755,F644", "-e", "ssh -o BatchMode=yes -o ConnectTimeout=6",
+                            tmp + "/", target], capture_output=True, text=True)
+        if r.returncode == 0:
+            return "rsync"
+        print(f"decide：rsync 失败（{r.stderr.strip()[:200]}），改走 HTTP 上传", file=sys.stderr)
+
+    def put(name):
+        with open(os.path.join(tmp, name), "rb") as f:
+            data = f.read()
+        ctype = "video/mp4" if name.endswith(".mp4") else "image/svg+xml" if name.endswith(".svg") else "application/octet-stream"
+        return http(c, "PUT", f"/api/media/{project}/{cid}/{name}", data=data, ctype=ctype, timeout=600)
+
+    with cf.ThreadPoolExecutor(4) as ex:
+        list(ex.map(put, names))
+    return "https"
+
+
+# ---------------- 选项配图（后台） ----------------
+GEN_STYLE = "简洁的扁平插画，干净的浅色背景，主体居中、一眼能认出，不要文字，"
+GEN_W, GEN_H = 1024, 576
+GEN_LOG_DIR = os.path.expanduser("~/.cache/decide")
+
+
+def gen_cmds(c):
+    """出图命令模板列表。DECIDE_GEN_CMD 多条用换行分隔，config.json 的 gen_cmd 可写成数组。
+    模板里的 {prompt} {out} {w} {h} 会被替换（按参数整体替换，不经过 shell）。"""
+    raw = c.get("gen_cmd") or []
+    if isinstance(raw, str):
+        raw = raw.splitlines()
+    return [x.strip() for x in raw if isinstance(x, str) and x.strip()]
+
+
+def gen_log(cid):
+    return os.path.join(GEN_LOG_DIR, f"gen-{cid}.log")
+
+
+def start_gen(cid, project, jobs):
+    """卡片已经上板，配图交给脱离终端的子进程慢慢出，命令行立刻返回。"""
+    os.makedirs(GEN_LOG_DIR, exist_ok=True)
+    jf = os.path.join(GEN_LOG_DIR, f"gen-{cid}.json")
+    with open(jf, "w") as f:
+        json.dump({"cid": cid, "project": project, "jobs": jobs}, f, ensure_ascii=False)
+    with open(gen_log(cid), "a") as log:
+        subprocess.Popen([sys.executable, os.path.realpath(__file__), "_gen", jf], stdin=subprocess.DEVNULL,
+                         stdout=log, stderr=log, start_new_session=True)
+
+
+GEN_PROCS = set()
+
+
+def gen_one(name, template, prompt, out):
+    """用一条出图命令出一张，成功返回 True。"""
+    import shlex
+    try:
+        cmd = [x.replace("{prompt}", prompt).replace("{out}", out).replace("{w}", str(GEN_W)).replace("{h}", str(GEN_H))
+               for x in shlex.split(template)]
+        p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                             start_new_session=True)  # 自成进程组，收尾时连子进程一起收掉
+    except (OSError, ValueError) as e:
+        log(f"{name} 失败：{e}")
+        return False
+    GEN_PROCS.add(p)
+    try:
+        so, se = p.communicate(timeout=240)
+    except subprocess.TimeoutExpired:
+        kill_group(p)
+        so, se = p.communicate()
+    finally:
+        GEN_PROCS.discard(p)
+    if p.returncode or not os.path.isfile(out):
+        log(f"{name} 没出成（{p.returncode}）：{(se or so or '').strip()[-300:]}")
+        return False
+    return True
+
+
+def kill_group(p):
+    try:
+        os.killpg(p.pid, 15)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def log(msg):
+    print(time.strftime("%H:%M:%S"), msg, flush=True)
+
+
+def cmd_gen(jf):
+    """每条出图命令一个工人，从同一个队列取活；队列空了，闲着的去抢别人跑了 25 秒还没出的那张，先出的算数。"""
+    import threading
+    with open(jf) as f:
+        job = json.load(f)
+    c, cid, project = conf(), job["cid"], job["project"]
+    items = [{"n": i + 1, "oid": j["oid"], "prompt": j["prompt"], "state": "todo", "t": 0, "runs": 0}
+             for i, j in enumerate(job["jobs"])]
+    workers = [(f"出图{i + 1}", tpl) for i, tpl in enumerate(gen_cmds(c))]
+    mu = threading.Lock()
+    tmp = tempfile.mkdtemp(prefix="decide-gen-")
+
+    def pick():
+        with mu:
+            for it in items:
+                if it["state"] == "todo":
+                    it.update(state="run", t=time.time(), runs=it["runs"] + 1)
+                    return it
+            for it in items:
+                if it["state"] == "run" and it["runs"] < 2 and time.time() - it["t"] > 25:
+                    it["runs"] += 1
+                    return it
+        return None
+
+    def deliver(it, name, png):
+        with mu:
+            if it["state"] == "done":
+                return
+            it["state"] = "done"
+        d = os.path.join(tmp, f"up{it['n']}")
+        os.makedirs(d, exist_ok=True)
+        base = f"/media/{project}/{cid}/"
+        if img_tool():
+            web, th = f"g{it['n']}.jpg", f"g{it['n']}_t.jpg"
+            w, h = sips_dims(png)
+            to_jpeg(png, os.path.join(d, web), 1024, 82, (w, h))
+            to_jpeg(png, os.path.join(d, th), THUMB_EDGE, 78, (w, h))
+            pic = {"src": base + web, "thumb": base + th, "w": w, "h": h}
+            names = [web, th]
+        else:
+            web = f"g{it['n']}{os.path.splitext(png)[1] or '.png'}"
+            shutil.copyfile(png, os.path.join(d, web))
+            pic, names = {"src": base + web}, [web]
+        upload(c, project, cid, d, names)
+        http(c, "POST", f"/api/cards/{cid}/pic", {"oid": it["oid"], "pic": pic})
+        log(f"第 {it['n']} 张（{it['oid']}）由 {name} 出完并补进卡片")
+
+    def worker(name, tpl):
+        fails = 0
+        while fails < 2:
+            it = pick()
+            if not it:
+                with mu:
+                    if all(x["state"] != "todo" for x in items) and not any(
+                            x["state"] == "run" and x["runs"] < 2 for x in items):
+                        return
+                time.sleep(2)
+                continue
+            png = os.path.join(tmp, f"{name}_{it['n']}_{it['runs']}.png")
+            t0 = time.time()
+            if gen_one(name, tpl, it["prompt"], png):
+                log(f"{name} 出第 {it['n']} 张用了 {time.time() - t0:.0f} 秒")
+                try:
+                    deliver(it, name, png)
+                except Exception as e:  # noqa: BLE001
+                    log(f"补图失败：{e}")
+            else:
+                fails += 1
+                with mu:
+                    if it["state"] == "run":
+                        it["runs"] -= 1
+                        it["state"] = "todo" if it["runs"] == 0 else "run"
+        log(f"{name} 连续失败两次，退出")
+
+    log(f"卡片 {cid}：{len(items)} 张配图，{len(workers)} 条出图命令")
+    ts = [threading.Thread(target=worker, args=w, daemon=True) for w in workers]
+    for t in ts:
+        t.start()
+    t_end = time.time() + 900
+    while any(t.is_alive() for t in ts) and time.time() < t_end:
+        with mu:
+            done = all(x["state"] == "done" for x in items)
+        if done:  # 全出完了：还在抢跑的那张不要了
+            for p in list(GEN_PROCS):
+                kill_group(p)
+        time.sleep(1)
+    for it in items:
+        if it["state"] != "done":
+            try:
+                http(c, "POST", f"/api/cards/{cid}/pic", {"oid": it["oid"], "failed": True})
+            except Exception:  # noqa: BLE001
+                pass
+            log(f"第 {it['n']} 张没出来，卡片上去掉占位")
+    shutil.rmtree(tmp, ignore_errors=True)
+    return 0
+
+
+# ---------------- 推卡片 ----------------
+def opt_from(label_desc, i):
+    label, _, desc = label_desc.partition("::")
+    label = label.strip()
+    rec = False
+    for tag in ("（推荐）", "(推荐)", "推荐："):
+        if label.endswith(tag) or label.startswith(tag):
+            label, rec = label.replace(tag, "").strip(), True
+    style = "good" if label in GOOD else "bad" if label in BAD else ""
+    oid = {"good": "ok", "bad": "redo"}.get(style) or re.sub(r"[^A-Za-z0-9_-]", "", label)[:24] or f"o{i + 1}"
+    o = {"id": oid, "label": label, "desc": desc.strip(), "style": style}
+    if rec:
+        o["rec"] = True
+    return o
+
+
+def build_spec(a, kind):
+    if a.spec:
+        with open(a.spec) as f:
+            spec = json.load(f)
+        media_in = [{"path": os.path.expanduser(m["path"]), "label": m.get("label", ""),
+                     "caption": m.get("caption", "")} for m in spec.pop("media", [])]
+        spec.setdefault("kind", kind)
+        return spec, media_in
+    spec = {"kind": kind, "title": a.title, "sub": a.sub or "", "facts": [], "options": [],
+            "multi": a.multi, "note": not a.no_note, "note_hint": a.note_hint or "",
+            "priority": a.priority}
+    media_in = []
+    for flag, default in ((a.before, "上一版"), (a.after, "这一版")):
+        if flag:
+            p, l, cap = split_spec(flag, default)
+            media_in.append({"path": p, "label": l, "caption": cap})
+    for m in a.media or []:
+        p, l, cap = split_spec(m)
+        media_in.append({"path": p, "label": l, "caption": cap})
+    if kind == "choose" and not getattr(a, "_opt_media", None):
+        if not a.choice:
+            die("pick 至少要一个 --choice \"A::图::说明\"")
+        for i, ch in enumerate(a.choice):
+            parts = ch.split("::")
+            if len(parts) < 2:
+                die(f"--choice 格式是 \"标签::文件::说明\"：{ch}")
+            label, path, desc = parts[0].strip(), os.path.expanduser(parts[1]), "::".join(parts[2:])
+            idx = len(media_in)
+            media_in.append({"path": path, "label": label, "caption": desc})
+            o = opt_from(label, i)
+            if any(x["id"] == o["id"] for x in spec["options"]):
+                o["id"] = f"c{i + 1}"
+            o["media"] = idx
+            spec["options"].append(o)
+    om = getattr(a, "_opt_media", {})
+    for i, o in enumerate(a.opt or []):
+        x = opt_from(o, len(spec["options"]) + i)
+        if any(y["id"] == x["id"] for y in spec["options"]):
+            x["id"] = f"o{len(spec['options']) + 1}"
+        if i in om:
+            x["media"] = om[i]
+        if i in getattr(a, "_gen", {}):
+            x["gen"] = True
+        spec["options"].append(x)
+    for k, v in (("画面产品", a.products), ("上次崩因", a.crash), ("这次改法", a.fix), ("文件", a.file)):
+        if v:
+            spec["facts"].append([k, v])
+    for f in a.fact or []:
+        k, sep, v = f.partition("=")
+        if not sep:
+            die(f"--fact 格式是 键=值：{f}")
+        spec["facts"].append([k.strip(), v.strip()])
+    if not spec["options"]:
+        spec.pop("options")
+    return spec, media_in
+
+
+def cmd_push(a, kind):
+    c = conf()
+    if not a.spec and not a.title:
+        die("缺 -t 标题（镜号或主题 + 一句话）")
+    spec, media_in = build_spec(a, kind)
+    project = a.project or spec.get("project")
+    if not project or not re.match(r"^[a-z0-9][a-z0-9-]{0,39}$", project):
+        die("缺 -p 项目，或项目代号不合法（小写字母数字和连字符）")
+    if re.fullmatch(r"\s*[A-Za-z]{0,3}\d+[a-z]?\s*", spec.get("title", "")):
+        die("标题只写了镜号，加一句画面描述，如「N23 浴室远景」")
+    cid = secrets.token_hex(4)
+    spec.update({"id": cid, "project": project, "session": SESSION, "source": a.source or os.environ.get("DECIDE_SOURCE")
+                 or "Claude · " + repo_name(), "batch": a.batch or spec.get("batch", "")})
+    if a.pname:
+        spec["project_name"] = a.pname
+    if media_in:
+        tmp = tempfile.mkdtemp(prefix="decide-")
+        try:
+            with cf.ThreadPoolExecutor(min(8, len(media_in))) as ex:
+                futs = [ex.submit(prep_one, i, m, project, cid, tmp) for i, m in enumerate(media_in)]
+                res = [f.result() for f in futs]
+            spec["media"] = [r[0] for r in res]
+            upload(c, project, cid, tmp, [n for r in res for n in r[1]])
+        except RuntimeError as e:
+            die(str(e))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+    try:
+        r = http(c, "POST", "/api/cards", spec)
+    except ApiError as e:
+        die(f"推卡片失败：{e}")
+    print(r["id"])
+    print(f"编号 {r['seq']:02d} · {r['url']}")
+    sys.stdout.flush()
+    gen = getattr(a, "_gen", {})
+    if gen:
+        jobs = [{"oid": spec["options"][i]["id"], "prompt": p} for i, p in sorted(gen.items())]
+        start_gen(r["id"], project, jobs)
+        print(f"配图在后台出（{len(jobs)} 张，出一张补一张；日志 {gen_log(r['id'])}）")
+    if a.wait:
+        return wait_ids(c, [r["id"]], False, a.timeout, 8, False)
+    return 0
+
+
+def repo_name():
+    """当前 git 主仓库的目录名；在 worktree 里也取主仓库，不取 worktree 的随机名。不在仓库里就用当前目录名。"""
+    try:
+        d = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], capture_output=True,
+                           text=True, timeout=3, stdin=subprocess.DEVNULL).stdout.strip()
+        if d:
+            return os.path.basename(os.path.dirname(d.rstrip("/"))) if os.path.basename(d.rstrip("/")) == ".git" else os.path.basename(d.rstrip("/")).removesuffix(".git")
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return os.path.basename(os.getcwd())
+
+
+def default_project():
+    p = os.environ.get("DECIDE_PROJECT") or re.sub(r"[^a-z0-9-]+", "-", repo_name().lower()).strip("-")[:40]
+    return p if re.match(r"^[a-z0-9][a-z0-9-]{0,39}$", p or "") else "claude"
+
+
+def cmd_q(a):
+    """快问：一行推一道选择题。选项写「标签::一句代价」，第三段可带一张图 / SVG：「标签::代价::图.svg」。"""
+    if len(a.opts) < 1:
+        die('至少一个选项：decide q "问题" "A::说明" "B::说明"')
+    a.title, a.choice, a.opt, a.media = a.question, None, [], list(a.svg or [])
+    pics, gens = [], {}
+    for i, x in enumerate(a.opts):
+        parts = x.split("::")
+        if len(parts) >= 2 and parts[-1].strip().startswith("@"):
+            gens[i] = parts[-1].strip()[1:].strip()
+            parts = parts[:-1]
+        elif len(parts) >= 3 and os.path.isfile(os.path.expanduser(parts[-1])):
+            pics.append((i, os.path.expanduser(parts[-1])))
+            parts = parts[:-1]
+        a.opt.append("::".join(parts))
+    for k in a.rec or []:
+        if not 1 <= k <= len(a.opt):
+            die(f"--rec {k} 超出选项个数")
+        a.opt[k - 1] = "（推荐）" + a.opt[k - 1]
+    for f in ("before", "after", "products", "crash", "fix", "file", "spec", "pname"):
+        setattr(a, f, getattr(a, f, None))
+    a.project = a.project or default_project()
+    if gens and pics:
+        die("同一道题里「@画面描述」和现成图片别混用")
+    if gens and not gen_cmds(conf()):
+        print("decide：没配出图命令 DECIDE_GEN_CMD，「@画面」先不出图，只按文字选", file=sys.stderr)
+        gens = {}
+    a._gen = {i: (a.gen_style + "，" if a.gen_style else GEN_STYLE) + p for i, p in gens.items() if p}
+    if not pics:
+        return cmd_push(a, "ask")
+    # 选项各带一张图：走 choose，图按选项顺序排
+    base_n = len(a.media)
+    spec_extra = {}
+    for j, (i, path) in enumerate(pics):
+        a.media.append(f"{path}::{a.opt[i].split('::')[0].replace('（推荐）', '')}::{(a.opt[i].split('::') + [''])[1]}")
+        spec_extra[i] = base_n + j
+    a._opt_media = spec_extra
+    return cmd_push(a, "choose")
+
+
+# ---------------- 等答案 ----------------
+def fmt_card(c):
+    a = c.get("answer") or {}
+    head = f"{(c.get('seq') or 0):02d}  {c['id']}"
+    if c["status"] == "pending":
+        return f"{head}  待定  {c['title']}"
+    if c["status"] == "cancelled":
+        return f"{head}  已撤销  {c['title']}"
+    labels = "、".join(a.get("labels") or a.get("choice") or [])
+    t = time.strftime("%H:%M", time.localtime(a.get("at") or c["updated"]))
+    note = ("  ｜意见：" + " / ".join(x.strip() for x in a["note"].splitlines() if x.strip())) if a.get("note") else ""
+    dev = f"{a.get('device')} · " if a.get("device") else ""
+    return f"{head}  已定  {c['title']}  →  {labels}{note}  （{dev}{t}）"
+
+
+def wait_ids(c, ids, any_mode, timeout, grace, as_json):
+    deadline = time.time() + timeout
+    ver, graced, fails = 0, False, 0
+    while True:
+        try:
+            j = http(c, "GET", "/api/cards?limit=500&ids=" + ",".join(ids), timeout=30)
+            fails = 0
+        except (ApiError, OSError) as e:
+            fails += 1
+            if isinstance(e, ApiError) and e.code in (401, 403):
+                die(f"密钥不对：{e}")
+            print(f"decide：连不上服务（{e}），{min(60, 5 * fails)} 秒后重试", file=sys.stderr)
+            time.sleep(min(60, 5 * fails))
+            if time.time() > deadline:
+                return 124
+            continue
+        got = {x["id"]: x for x in j["cards"]}
+        missing = [i for i in ids if i not in got]
+        if missing:
+            die("没有这些卡片：" + " ".join(missing))
+        done = [got[i] for i in ids if got[i]["status"] != "pending"]
+        ready = bool(done) if any_mode else len(done) == len(ids)
+        if ready and (graced or grace <= 0):
+            cards = [got[i] for i in ids]
+            if as_json:
+                print(json.dumps([{"id": x["id"], "title": x["title"], "project": x["project"],
+                                   "status": x["status"], "choice": (x.get("answer") or {}).get("choice"),
+                                   "labels": (x.get("answer") or {}).get("labels"),
+                                   "note": (x.get("answer") or {}).get("note", "")} for x in cards],
+                                 ensure_ascii=False, indent=1))
+            else:
+                for x in cards:
+                    print(fmt_card(x))
+            try:
+                http(c, "POST", "/api/ack", {"ids": [x["id"] for x in cards]}, timeout=20)
+            except (ApiError, OSError):
+                pass
+            return 3 if any(x["status"] == "cancelled" for x in cards) else 0
+        if ready:
+            graced = True
+            time.sleep(grace)
+            continue
+        graced = False
+        rem = deadline - time.time()
+        if rem <= 0:
+            for x in (got[i] for i in ids):
+                print(fmt_card(x))
+            print(f"decide：等了 {timeout} 秒还没定完", file=sys.stderr)
+            return 124
+        try:
+            ver = http(c, "GET", f"/api/poll?since={ver}&timeout={int(min(50, max(1, rem)))}", timeout=70)["ver"]
+        except (ApiError, OSError):
+            time.sleep(3)
+
+
+def cmd_wait(a):
+    c = conf()
+    if not a.ids:
+        die("给至少一个卡片 id")
+    return wait_ids(c, a.ids, a.any, a.timeout, a.grace, a.json)
+
+
+def cmd_listen(a):
+    c = conf()
+    if not SESSION:
+        die("没有会话 id：设 DECIDE_SESSION 或在 Claude Code 里跑")
+    os.makedirs(LOCK_DIR, exist_ok=True)
+    lock = os.path.join(LOCK_DIR, f"listen-{SESSION}.pid")
+    try:
+        old = int(open(lock).read().strip())
+        os.kill(old, 0)
+        print(f"decide：本会话已有监听在跑（pid {old}），不重复启动")
+        return 0
+    except (FileNotFoundError, ValueError, ProcessLookupError, PermissionError):
+        pass
+    with open(lock, "w") as f:
+        f.write(str(os.getpid()))
+    try:
+        deadline = time.time() + a.timeout
+        fails = 0
+        while time.time() < deadline:
+            try:
+                rem = int(min(50, max(1, deadline - time.time())))
+                got = http(c, "GET", f"/api/listen?session={SESSION}&timeout={rem}", timeout=75)["cards"]
+                fails = 0
+            except ApiError as e:
+                if e.code in (401, 403):
+                    die(f"密钥不对：{e}")
+                got, fails = [], fails + 1
+                time.sleep(min(60, 5 * fails))
+                continue
+            except OSError as e:
+                fails += 1
+                print(f"decide：连不上服务（{e}），{min(60, 5 * fails)} 秒后重试", file=sys.stderr)
+                time.sleep(min(60, 5 * fails))
+                continue
+            if not got:
+                continue
+            if a.grace > 0:
+                time.sleep(a.grace)
+                got = http(c, "GET", f"/api/listen?session={SESSION}&timeout=1", timeout=30)["cards"]
+                if not got:
+                    continue
+            print(f"用户在 decide 上定了 {len(got)} 张：")
+            for x in got:
+                print("  " + fmt_card(x))
+            chat = [x for x in got if "chat" in ((x.get("answer") or {}).get("choice") or [])]
+            if chat:
+                print("其中 " + "、".join(f"{x['seq']:02d}" for x in chat) + " 用户选了「在对话里说」：别再追问这几张，等他在对话里给意见。")
+            http(c, "POST", "/api/ack", {"ids": [x["id"] for x in got]}, timeout=20)
+            print("（处理完记得重新挂 decide listen）")
+            return 0
+        return 124
+    finally:
+        try:
+            if open(lock).read().strip() == str(os.getpid()):
+                os.remove(lock)
+        except OSError:
+            pass
+
+
+SYN = {"过": "ok", "通过": "ok", "可以": "ok", "ok": "ok", "OK": "ok", "行": "ok",
+       "返": "redo", "返修": "redo", "打回": "redo", "重出": "redo", "不行": "redo"}
+
+
+def cmd_resolve(a):
+    c = conf()
+    ref = a.ref.lstrip("#")
+    if ref.isdigit():
+        found = http(c, "GET", f"/api/cards?seq={int(ref)}&limit=1")["cards"]
+        if not found:
+            die(f"没有编号 {ref} 的卡片")
+        card = found[0]
+    else:
+        card = http(c, "GET", f"/api/cards/{ref}")
+    opts = card["options"]
+    want = a.choice.strip()
+    pick = None
+    for o in opts:
+        if want in (o["id"], o["label"]) or SYN.get(want) == o["id"]:
+            pick = o
+    if pick is None and want.isdigit() and 1 <= int(want) <= len(opts):
+        pick = opts[int(want) - 1]
+    if pick is None:
+        die("选项对不上，可选：" + " / ".join(o["label"] for o in opts))
+    try:
+        r = http(c, "POST", f"/api/cards/{card['id']}/answer",
+                 {"choice": [pick["id"]], "note": " ".join(a.note), "device": "Claude 对话", "ack": True})
+    except ApiError as e:
+        die(f"记不上：{e}")
+    print(fmt_card(r))
+    return 0
+
+
+def cmd_chat(a):
+    """用户在对话里给意见了：把本会话（或指定编号）的待定卡清掉，网页上随即消失。"""
+    c = conf()
+    ids = []
+    for ref in a.refs:
+        ref = ref.lstrip("#")
+        if ref.isdigit():
+            found = http(c, "GET", f"/api/cards?seq={int(ref)}&limit=1")["cards"]
+            if not found:
+                die(f"没有编号 {ref} 的卡片")
+            ids.append(found[0]["id"])
+        else:
+            ids.append(ref)
+    if not ids and not SESSION:
+        die("没有会话 id：给编号，或设 DECIDE_SESSION")
+    body = {"ids": ids} if ids else {"session": SESSION}
+    body.update({"device": "Claude 对话", "ack": True})
+    r = http(c, "POST", "/api/chat", body)
+    if not r["ids"]:
+        print("没有要清的待定卡")
+    else:
+        print("已从 decide 清掉（在对话里说）：" + "、".join(f"{n:02d}" for n in r["seqs"]))
+    return 0
+
+
+# ---------------- 其他命令 ----------------
+def cmd_ls(a):
+    c = conf()
+    q = f"/api/cards?limit={a.n}&status={a.s}" + (f"&project={a.project}" if a.project else "")
+    for x in http(c, "GET", q)["cards"]:
+        print(f"[{x['project']}] " + fmt_card(x))
+    return 0
+
+
+def cmd_show(a):
+    c = conf()
+    for i in a.ids:
+        print(json.dumps(http(c, "GET", f"/api/cards/{i}"), ensure_ascii=False, indent=1))
+    return 0
+
+
+def cmd_cancel(a):
+    c = conf()
+    rc = 0
+    for i in a.ids:
+        try:
+            http(c, "POST", f"/api/cards/{i}/cancel", {})
+            print(f"{i}  已撤销")
+        except ApiError as e:
+            print(f"{i}  撤销失败：{e}", file=sys.stderr)
+            rc = 2
+    return rc
+
+
+def cmd_project(a):
+    c = conf()
+    act, rest = a.action, a.args
+    if act == "ls":
+        for p in http(c, "GET", "/api/projects")["projects"]:
+            tag = "（已归档）" if p["archived"] else ""
+            print(f"{p['slug']:<20} {p['name']}{tag}  待定 {p['pending']} · 已定 {p['answered']}")
+        return 0
+    if not rest:
+        die("要给项目 slug")
+    body = {"slug": rest[0]}
+    if act in ("add", "rename"):
+        if len(rest) > 1:
+            body["name"] = " ".join(rest[1:])
+        elif act == "rename":
+            die("rename 要给新名字")
+    elif act in ("archive", "unarchive"):
+        body["archived"] = act == "archive"
+    else:
+        die("project 子命令只有 ls / add / rename / archive / unarchive")
+    http(c, "POST", "/api/projects", body)
+    print("好了")
+    return 0
+
+
+def cmd_open(a):
+    c = conf()
+    path = "/"
+    if len(a.projects) == 1:
+        path = "/p/" + a.projects[0]
+    elif a.projects:
+        path = "/grid?p=" + ",".join(a.projects[:4])
+    webbrowser.open(f"{c['base']}{path}#k={c['key']}")
+    print(f"已在浏览器打开 {c['base']}{path}")
+    return 0
+
+
+def cmd_key(a):
+    c = conf()
+    if a.print or not shutil.which("pbcopy"):
+        print(c["key"])
+    else:
+        subprocess.run(["pbcopy"], input=c["key"].encode())
+        print("密钥已复制到剪贴板（iPhone / iPad 开着接力可以直接粘贴）")
+    return 0
+
+
+def cmd_doctor(a):
+    c = conf()
+    ok = True
+    print(f"网址：{c['base']}")
+    print(f"密钥：已配置（{len(c['key'])} 位）")
+    try:
+        h = http(c, "GET", "/api/health", timeout=15)
+        print(f"服务：正常（版本号 {h['ver']}）")
+        st = http(c, "GET", "/api/projects", timeout=15)
+        print(f"鉴权：正常（{len(st['projects'])} 个项目）")
+    except Exception as e:  # noqa: BLE001
+        ok = False
+        print(f"服务：连不上或鉴权失败 —— {e}")
+    if c["ssh"] == "local" and c["media_root"]:
+        print("上传：本机直接拷贝" if os.access(c["media_root"], os.W_OK) else f"上传：{c['media_root']} 不可写，会改走 HTTP")
+    elif c["ssh"] and c["media_root"]:
+        r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=6", c["ssh"], "test -w " + c["media_root"]],
+                           capture_output=True, text=True)
+        print("上传：rsync 可用" if r.returncode == 0 else f"上传：rsync 不通，会改走 HTTP（{r.stderr.strip()[:120]}）")
+    else:
+        print("上传：HTTP（/api/media）")
+    print(f"缩略图：{ {'sips': 'sips（macOS）', 'pil': 'Pillow'}.get(img_tool(), '没有 sips / Pillow，原图直传') }")
+    n = len(gen_cmds(c))
+    print(f"「@画面」出图：{n} 条命令" if n else "「@画面」出图：未配置（DECIDE_GEN_CMD）")
+    return 0 if ok else 2
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ("help", "-h", "--help"):
+        print(HELP)
+        return 0
+    if sys.argv[1] == "_gen" and len(sys.argv) == 3:
+        return cmd_gen(sys.argv[2])
+    ap = argparse.ArgumentParser(prog="decide", add_help=True)
+    sub = ap.add_subparsers(dest="cmd")
+    for name in ("ask", "pick"):
+        p = sub.add_parser(name)
+        p.add_argument("-p", "--project")
+        p.add_argument("--pname")
+        p.add_argument("-t", "--title")
+        p.add_argument("--sub")
+        p.add_argument("--before")
+        p.add_argument("--after")
+        p.add_argument("--media", action="append")
+        p.add_argument("--choice", action="append")
+        p.add_argument("--products")
+        p.add_argument("--crash")
+        p.add_argument("--fix")
+        p.add_argument("--file")
+        p.add_argument("--fact", action="append")
+        p.add_argument("--opt", action="append")
+        p.add_argument("--multi", action="store_true")
+        p.add_argument("--no-note", action="store_true")
+        p.add_argument("--note-hint")
+        p.add_argument("--priority", type=int, default=0)
+        p.add_argument("--batch")
+        p.add_argument("--source")
+        p.add_argument("--spec")
+        p.add_argument("--wait", action="store_true")
+        p.add_argument("--timeout", type=int, default=3600)
+    p = sub.add_parser("q")
+    p.add_argument("question")
+    p.add_argument("opts", nargs="*")
+    p.add_argument("-p", "--project")
+    p.add_argument("--pname")
+    p.add_argument("--sub")
+    p.add_argument("--svg", action="append", help="示意图（SVG / 图片），可多张")
+    p.add_argument("--gen-style", help="配图统一风格（替换默认的扁平插画风格前缀）")
+    p.add_argument("--rec", type=int, action="append", help="推荐第几个（从 1 数）")
+    p.add_argument("--fact", action="append")
+    p.add_argument("--multi", action="store_true")
+    p.add_argument("--no-note", action="store_true")
+    p.add_argument("--note-hint")
+    p.add_argument("--priority", type=int, default=0)
+    p.add_argument("--batch")
+    p.add_argument("--source")
+    p.add_argument("--wait", action="store_true")
+    p.add_argument("--timeout", type=int, default=3600)
+    p = sub.add_parser("wait")
+    p.add_argument("ids", nargs="*")
+    p.add_argument("--any", action="store_true")
+    p.add_argument("--timeout", type=int, default=3600)
+    p.add_argument("--grace", type=int, default=8)
+    p.add_argument("--json", action="store_true")
+    p = sub.add_parser("listen")
+    p.add_argument("--timeout", type=int, default=6 * 3600)
+    p.add_argument("--grace", type=int, default=8)
+    p = sub.add_parser("resolve")
+    p.add_argument("ref")
+    p.add_argument("choice")
+    p.add_argument("note", nargs="*")
+    p = sub.add_parser("chat")
+    p.add_argument("refs", nargs="*")
+    p = sub.add_parser("ls")
+    p.add_argument("-p", "--project")
+    p.add_argument("-s", default="all", choices=["pending", "answered", "cancelled", "all"])
+    p.add_argument("-n", type=int, default=20)
+    p = sub.add_parser("show")
+    p.add_argument("ids", nargs="+")
+    p = sub.add_parser("cancel")
+    p.add_argument("ids", nargs="+")
+    p = sub.add_parser("project")
+    p.add_argument("action", choices=["ls", "add", "rename", "archive", "unarchive"])
+    p.add_argument("args", nargs="*")
+    p = sub.add_parser("open")
+    p.add_argument("projects", nargs="*")
+    p = sub.add_parser("key")
+    p.add_argument("--copy", action="store_true")
+    p.add_argument("--print", action="store_true")
+    sub.add_parser("doctor")
+    a = ap.parse_args()
+    if a.cmd in ("ask", "pick"):
+        if a.cmd == "ask" and a.choice:
+            die("--choice 只给 pick 用")
+        kind = "choose" if a.cmd == "pick" else ("review" if a.before or a.after or (a.media and not a.opt) else "ask")
+        return cmd_push(a, kind)
+    if a.cmd == "q":
+        return cmd_q(a)
+    return {"wait": cmd_wait, "listen": cmd_listen, "resolve": cmd_resolve, "chat": cmd_chat, "ls": cmd_ls, "show": cmd_show, "cancel": cmd_cancel, "project": cmd_project,
+            "open": cmd_open, "key": cmd_key, "doctor": cmd_doctor}[a.cmd](a)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except ApiError as e:
+        die(str(e))

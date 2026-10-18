@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="light only">
+<meta name="theme-color" content="#f6f5f1">
+<title>帮助 · decide</title>
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="icon" href="/icon-512.png" type="image/png" sizes="512x512">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Noto+Serif+SC:wght@500&display=swap">
+<link rel="stylesheet" href="/style.css?v=19">
+</head>
+<body>
+<header class="bar">
+  <a class="mark" href="/">decide</a>
+  <div class="right">
+    <a href="/">回到待定</a>
+    <a href="/grid">四宫格</a>
+    <a href="/done">已定</a>
+  </div>
+</header>
+<main class="doc">
+  <h1>怎么用</h1>
+  <p class="lead">Claude 有需要你拍板的东西，就推一张卡片到这里。一次只看一张：看图，点<b>通过</b>或<b>返修</b>，自动跳到下一张。你的选择会直接传回发卡的那个 Claude 对话。</p>
+  <nav class="toc">
+    <a href="#card">一张卡片</a><a href="#say">在对话里说</a><a href="#relay">怎么传回 Claude</a><a href="#keys">快捷键</a><a href="#projects">多个项目</a><a href="#phone">手机</a><a href="#login">别的设备登录</a><a href="#faq">常见问题</a><a href="#cli">给 Claude 的命令</a>
+  </nav>
+
+  <h2 id="card">一张卡片</h2>
+  <table class="kv">
+    <tr><td>大号数字</td><td>卡片编号，如 <span class="n" style="font-size:18px">07</span>。全局唯一，在对话里说「07」就能指这一张。</td></tr>
+    <tr><td>标题</td><td>镜号或主题加一句描述。标题上方的小字是哪个项目推来的；下面一行灰字是补充。</td></tr>
+    <tr><td>选择题</td><td>没有图的问题（用哪台机器、走哪个方案、确认开工）会把每个选项画成一块大卡片：问题在最上面，卡片里写这个选项要多久、花多少、有什么风险，标「推荐」的是 Claude 建议的。点卡片或按 1–9 就选；每张选项卡右下角都有「要改…」：选它，但附一句哪里要改（快捷键 Shift + 数字）；多选题点几张再按「确定」；点红色的「要改」选项会弹出意见框。有示意图时图在上、选项卡在下。</td></tr>
+    <tr><td>图片</td><td>几张就并排几张：按张数和长宽自动排，3 张一行 3 张，4 张竖图一行 4 张，6 张排 3×2，取让每张最大的那种排法。说明里带红点的是出问题的那一版（如「上次崩的」）。电脑上鼠标移到图上会出现放大镜看细节，滚轮调倍数。点图打开图层：3 张以上默认「并排」看全部，每张都能用放大镜，点其中一张单独看，底部「并排看 N 张」再切回来；右上角 ×、点空白处或按 Esc 关；图层底部也能直接点通过 / 返修或选这张；两张图能叠在一起拖线对比。手机上在图层里点图放大、拖动看细节，再点还原。</td></tr>
+    <tr><td>按钮</td><td>审图卡只有两个：<b>通过</b>、<b>返修</b>。点返修会弹出写意见的框，写完回车提交（Shift + 回车换行，Esc 取消），意见跟着返修一起传给 Claude；不写直接点「提交返修」也行。选择题（A / B / C）点下面的字母，或点图打开后点「选 A」；每张候选图下面也有「要改…」，选这张并写意见。纯文字问题点选项。可多选的卡选完再点「确定」。</td></tr>
+    <tr><td>底下一行</td><td>补充信息：审片卡是画面里有什么、上次崩在哪、这次怎么改；别的卡按需要写。</td></tr>
+    <tr><td>最下面的小图</td><td>这个队列里剩下的卡，点一下跳过去，不用按顺序定。</td></tr>
+  </table>
+  <p>点错了？底部提示条上有「撤回」，10 秒内都能点；也可以按 <kbd>Z</kbd>，或去「已定」页点「撤回重定」。</p>
+
+  <h2 id="say">在对话里说</h2>
+  <p>返修意见可以直接写在网页上的意见框里。你也可以只在副屏上看，意见回到 Claude 对话里打：</p>
+  <ul>
+    <li>在网页上点「这 3 张在对话里说」（快捷键 <kbd>C</kbd>），这一组卡一起消失，Claude 会知道你要在对话里说。</li>
+    <li>或者直接在对话里说，Claude 会自己把它推的卡从这里清掉。要指某一张就带编号，如「07 返修，字再大一点」。</li>
+  </ul>
+
+  <h2 id="perm">Claude 授权卡</h2>
+  <p>本机任何一个 Claude 会话要你允许命令、改文件、用 MCP 工具，或者向你提问、请你批准计划、问要不要开新会话，都会在「Claude 授权」这一栏出一张卡，排在最前面。标题是工具和一句话，下面是完整命令或改动（长的先折叠），信息栏写项目、会话和目录。</p>
+  <ul>
+    <li>按 <kbd>1</kbd> 允许、<kbd>2</kbd> 本会话一直允许（卡上写着管到哪些命令，关掉会话就失效）、<kbd>3</kbd> 拒绝。拒绝可以附一句意见，Claude 会照着改。</li>
+    <li>同一个请求在 Claude 自己的对话框里也能答，哪边先答算哪边，另一边的卡自动消失。</li>
+    <li>授权卡答完 Claude 就继续了，所以没有撤回，也没有「在对话里说」。命令里像密钥、密码的片段在卡上打了码，Claude 收到的还是原命令。</li>
+  </ul>
+
+  <h2 id="relay">怎么传回 Claude</h2>
+  <p>发卡的 Claude 对话在后台挂着一个监听。你一点，答案就送到那个对话，它接着干活。提示条会告诉你送到没有：</p>
+  <table class="kv">
+    <tr><td>已传给 Claude</td><td>对话正在等，马上就收到了。</td></tr>
+    <tr><td>Claude 下次查看时收到</td><td>对话暂时没在等（比如正在跑别的活），答案已经存好，它下次查看就会拿到，不会丢。</td></tr>
+    <tr><td>已记下</td><td>这张卡不属于某个对话（比如手动推的），只记录结果。</td></tr>
+  </table>
+
+  <h2 id="keys">快捷键</h2>
+  <table class="kv">
+    <tr><td><kbd>1</kbd> <kbd>2</kbd> …</td><td>按顺序选第几个按钮。审图卡里 1 是通过，2 是返修（弹出意见框）。</td></tr>
+    <tr><td><kbd>Shift</kbd> + 数字</td><td>选第几个，并弹出意见框写哪里要改（通过 / 返修卡不用，返修本身就带意见框）。</td></tr>
+    <tr><td><kbd>C</kbd></td><td>这一组在对话里说。</td></tr>
+    <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>上一张、下一张（只是翻看，不算定）。手机上左右滑。</td></tr>
+    <tr><td><kbd>Z</kbd></td><td>撤回刚才那一下。</td></tr>
+    <tr><td><kbd>O</kbd> 或空格</td><td>看大图。大图里 <kbd>←</kbd> <kbd>→</kbd> 换图，<kbd>Esc</kbd> 关。</td></tr>
+    <tr><td><kbd>Enter</kbd></td><td>多选卡提交。</td></tr>
+    <tr><td><kbd>?</kbd></td><td>打开这页。</td></tr>
+  </table>
+
+  <h2 id="projects">多个项目</h2>
+  <p>顶部一排是项目，数字是还剩几张待定。「全部」把所有项目排成一个队列。</p>
+  <ul>
+    <li><b>每个项目一个窗口</b>：点项目名后把地址拖成新窗口，或直接开 <code>你的决策板地址/p/项目名</code>。几个窗口各管各的，互不影响。</li>
+    <li><b>四宫格</b>：一屏同时看四个项目，各自一张卡。左上角下拉换项目；点哪一格，键盘就作用在哪一格。</li>
+    <li><b>归档</b>：做完的项目在「已定」页底部归档，就不再出现在顶部，随时能恢复。</li>
+  </ul>
+
+  <h2 id="phone">手机</h2>
+  <p>按钮固定在屏幕底部，大拇指够得着；图上下排，左右滑翻页。Safari 里点「分享 → 添加到主屏幕」，以后像 App 一样打开。新卡片来时页面会自己刷新，开着就行。</p>
+
+  <h2 id="login">别的设备登录</h2>
+  <p>在手机、iPad 或别的电脑上打开你的决策板地址，输入密码（服务端设了 <code>DECIDE_PASSWORD</code> 时）或密钥就进来了，登录一次能保持一年。输错 5 次会锁 10 分钟。</p>
+
+  <h2 id="faq">常见问题</h2>
+  <p><b>左上角 decide 旁边有个点？</b>黄点是正在重连，红点是连接断了。一般会自己恢复，不行就刷新。</p>
+  <p><b>页面在后台，有新卡怎么知道？</b>标签页标题会闪「● 新卡片」，括号里的数字是待定张数。</p>
+  <p><b>点完 Claude 没反应？</b>看提示条。如果是「Claude 下次查看时收到」，在对话里随便说一句「看看 decide」，它就会去取。</p>
+  <p><b>视频卡怎么看？</b>直接在卡片里播放；要全屏点「放大」。</p>
+
+  <h2 id="cli">给 Claude 的命令</h2>
+  <p>这些是 Claude 在终端里用的，你一般不需要。</p>
+  <pre><code># 审一张图：通过 / 返修
+decide ask -p film-ep1 -t "T12 杯子特写 · 手柄朝右" --before old.jpg --after new.jpg \
+  --products "咖啡杯" --crash "手柄断了" --fix "换了参考图"
+
+# 挑一张：点图即选
+decide pick -p film-ep4 -t "01 外观 · 哪张光影最好" \
+  --choice "A::a.jpg" --choice "B::b.jpg" --choice "C::c.jpg"
+
+# 等你在网页上点（放后台，每次返回后重新挂）
+decide listen
+
+# 你在对话里打「07 返修 …」时，Claude 用这条记下
+decide resolve 07 返修 字再大一点
+
+decide ls                       # 看待定和最近定过的
+decide help                     # 完整命令说明</code></pre>
+</main>
+</body>
+</html>
