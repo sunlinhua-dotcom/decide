@@ -55,6 +55,8 @@ decide —— 把要用户拍板的事推到 decide 决策板网页，等用户�
     -p <项目>                默认取 $DECIDE_PROJECT，没有就用当前 git 主仓库名（worktree 也认主仓库），再没有用目录名
     --sub <一句话>            问题下面的补充说明
     --svg <图.svg>            附一张示意图（流程 / 架构 / 对比），可重复；SVG 秒出、字清楚，比生图快
+                             密密麻麻的方案图（三节以上、400 字以上）自动拆成网页文字，每节千问配图；
+                             小节 <g> 上写 data-pic="画面描述" 可指定画什么；--raw-svg 照原样贴图
     选项第三段带图            "A::代价::a.svg" —— 每个选项配一张小示意图
     选项第三段写「@画面」      "A::代价::@一只橘猫坐在窗台上" —— 卡片先上板，后台调你配的出图命令
                              （DECIDE_GEN_CMD，可配多条一起抢）出图，出一张补一张；出不来照样能按文字选
@@ -103,6 +105,8 @@ decide —— 把要用户拍板的事推到 decide 决策板网页，等用户�
   decide ls [-p 项目] [-s pending|answered|cancelled|all] [-n 条数]
   decide show <id>                 整张卡片 JSON
   decide cancel <id> …             撤销还没定的卡片
+  decide link <编号|id> [名称::网址 …]   已上板的卡补可点链接（不给就从卡上的 SVG 里认网址；--clear 清掉）
+  decide replan <编号|id> …        已上板的卡：字多的 SVG 方案图改成网页文字 + 每节千问配图（--no-pics 不配图）
   decide project ls | add <slug> [名字] | rename <slug> <名字> | archive <slug> | unarchive <slug>
   decide open [项目 …]             浏览器打开（自动登录）；给多个项目就开四宫格
   decide key --copy                把密钥复制到剪贴板（手机粘贴登录用）
@@ -233,6 +237,177 @@ def svg_prep(src, dst):
     with open(dst, "w", encoding="utf-8") as f:
         f.write(t)
     return round(w), round(h)
+
+
+# 完成卡里写到的网址：板上排成可点的链接（图里写的网址本身点不了）
+_STOP = r"\s，。、；：！？）)」』】\"'<>"
+URL_RE = re.compile(r"https?://[^" + _STOP + r"]+", re.I)
+DOM_RE = re.compile(r"(?<![A-Za-z0-9_@/.-])((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:top|com|ai|io|net|org|app|dev|me|co|site|xyz|sg))"
+                    r"(/[^" + _STOP + r"]*)?(?![A-Za-z0-9_.-])", re.I)
+
+
+def find_links(texts):
+    """从字里认出网址：https://… 照收，没写协议的域名（example.com/x）补 https://。"""
+    out = []
+    for t in texts:
+        for u in URL_RE.findall(t or ""):
+            out.append(u.rstrip(".,;:!?"))
+        for m in DOM_RE.finditer(URL_RE.sub(" ", t or "")):
+            out.append("https://" + m.group(1).lower() + (m.group(2) or "").rstrip(".,;:!?"))
+    seen, links = set(), []
+    for u in out:
+        k = u.rstrip("/")
+        if k not in seen:
+            seen.add(k)
+            links.append({"t": "", "url": u})
+    return links
+
+
+def svg_texts(path):
+    """SVG 里所有 <text> 的字和 <a> 的 href。"""
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.parse(path).getroot()
+    except (ET.ParseError, OSError):
+        return []
+    out = []
+    for e in root.iter():
+        t = e.tag.rsplit("}", 1)[-1]
+        if t == "text":
+            out.append(re.sub(r"\s+", " ", "".join(e.itertext())).strip())
+        elif t == "a":
+            out += [v for k, v in e.attrib.items() if k.endswith("href")]
+    return out
+
+
+def parse_link(x):
+    """--link 写「名称::网址」或只写网址。"""
+    t, sep, u = x.partition("::")
+    if not sep:
+        t, u = "", x
+    u = u.strip()
+    if not re.match(r"https?://", u, re.I):
+        if DOM_RE.fullmatch(u):
+            u = "https://" + u
+        else:
+            die(f"--link 不是网址：{x}")
+    return {"t": t.strip()[:60], "url": u}
+
+
+def merge_links(*groups):
+    seen, out = set(), []
+    for g in groups:
+        for l in g or []:
+            k = l["url"].rstrip("/")
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(l)
+    return out[:12]
+
+
+def svg_plan(path):
+    """字很多的方案图（标题 + 一块块带框的小节）拆成结构，网页用原生文字排、每节配一张千问图。
+    不是这种图（流程 / 架构，字少）返回 None，照原样当示意图。"""
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.parse(path).getroot()
+    except (ET.ParseError, OSError):
+        return None
+    tag = lambda e: e.tag.rsplit("}", 1)[-1]
+    order = {e: i for i, e in enumerate(root.iter())}
+    parent = {k: e for e in root.iter() for k in e}
+    txt = lambda e: re.sub(r"\s+", " ", "".join(e.itertext())).strip()
+    texts = [e for e in root.iter() if tag(e) == "text" and txt(e)]
+    total = sum(len(txt(e)) for e in texts)
+    shapes = sum(1 for e in root.iter() if tag(e) in ("rect", "circle", "ellipse", "path", "line", "polyline",
+                                                      "polygon", "image"))
+    # 方案图 = 一句句话（平均 10 字以上）、框比字少；手机界面 / 流程图是短标签配一堆图形，照原样贴
+    if len(texts) < 8 or total < 160 or total / len(texts) < 10 or shapes > len(texts):
+        return None
+
+    def attr(e, k):
+        while e is not None:
+            if e.get(k):
+                return e.get(k)
+            e = parent.get(e)
+        return None
+
+    def fsize(e):
+        try:
+            return float(re.sub(r"[^\d.]", "", attr(e, "font-size") or "16") or 16)
+        except ValueError:
+            return 16.0
+    bold = lambda e: (attr(e, "font-weight") or "") in ("bold", "bolder", "600", "700", "800", "900")
+    plan = {"title": "", "sub": "", "lines": [], "foot": [], "secs": []}
+    cands = [g for g in root.iter() if tag(g) == "g" and any(tag(k) == "rect" for k in g)
+             and sum(1 for k in g.iter() if tag(k) == "text" and txt(k)) >= 2]
+    secs_el = [g for g in cands if not any(o is not g and o in set(g.iter()) for o in cands)]
+    in_sec = {k for g in secs_el for k in g.iter()}
+    num = lambda e, k: float(re.sub(r"[^\d.-]", "", e.get(k) or "0") or 0)
+    if not secs_el:  # 没分组、直接画框写字（完成卡左右两栏）：按坐标把字归进框里
+        boxes = [r for r in root.iter() if tag(r) == "rect" and parent.get(r) is root and num(r, "width") > 160
+                 and num(r, "height") > 60]
+        vb = [float(x) for x in re.split(r"[\s,]+", (root.get("viewBox") or "0 0 0 0").strip())[2:4]] or [0, 0]
+        boxes = [r for r in boxes if not (num(r, "width") >= 0.95 * vb[0] and num(r, "height") >= 0.95 * vb[1])]
+        for r in sorted(boxes, key=lambda r: (num(r, "y"), num(r, "x"))):
+            x0, y0, x1, y1 = num(r, "x"), num(r, "y"), num(r, "x") + num(r, "width"), num(r, "y") + num(r, "height")
+            ts = [e for e in texts if parent.get(e) is root and e not in in_sec
+                  and x0 <= num(e, "x") <= x1 and y0 <= num(e, "y") <= y1]
+            if len(ts) < 2:
+                continue
+            ts.sort(key=lambda e: (num(e, "y"), num(e, "x")))
+            head = next((e for e in ts if bold(e) or fsize(e) > fsize(ts[-1])), ts[0])
+            sec = {"t": txt(head), "lines": [txt(e) for e in ts if e is not head]}
+            if re.fullmatch(r"#[0-9a-fA-F]{3,8}", head.get("fill") or ""):
+                sec["color"] = head.get("fill")
+            plan["secs"].append(sec)
+            in_sec.update(ts)
+            secs_el.append(r)
+    for g in sorted((x for x in secs_el if tag(x) == "g"), key=order.get):
+        ts = [e for e in g.iter() if tag(e) == "text" and txt(e)]
+        head = next((e for e in ts if bold(e)), ts[0])
+        rect = next(k for k in g if tag(k) == "rect")
+        color = head.get("fill") if head.get("fill", "").startswith("#") else rect.get("stroke") or ""
+        sec = {"t": txt(head), "lines": [txt(e) for e in ts if e is not head]}
+        if re.fullmatch(r"#[0-9a-fA-F]{3,8}", color or ""):
+            sec["color"] = color
+        if g.get("data-pic"):  # 发卡的 Claude 自己写的画面描述，比自动拼的准
+            sec["_pic"] = g.get("data-pic").strip()[:200]
+        plan["secs"].append(sec)
+    top = [e for e in texts if e not in in_sec]
+    first = min((order[g] for g in secs_el), default=10 ** 9)
+    if top:
+        big = max(top, key=fsize)
+        if fsize(big) > min(fsize(e) for e in top) or len(top) == 1:
+            plan["title"] = txt(big)
+            top.remove(big)
+    for e in top:
+        if not secs_el:
+            plan["lines"].append(txt(e))
+        elif order[e] < first:
+            plan["sub"] = (plan["sub"] + " " + txt(e)).strip()
+        else:
+            plan["foot"].append(txt(e))
+    # 只有密密麻麻的才转（三节以上、400 字以上，如 425）；两栏完成卡、三栏对比这种原图就看得清，
+    # 照原样贴图、不配千问图（10-18 用户：简单的不需要千问生成）
+    return plan if len(plan["secs"]) >= 3 and total >= 400 else None
+
+
+def plan_gen(plan, style=None):
+    """方案每一节配一张图：节名 + 第一行讲的事，千问画成扁平插画（最多 8 张）。"""
+    jobs = []
+    for sec in plan["secs"][8:]:
+        sec.pop("_pic", None)
+    for i, sec in enumerate(plan["secs"][:8]):
+        # 千问会把引号里的话、数字原样写进画面：只留描述，引号里的原话和数字都去掉
+        clean = lambda x: re.sub(r"\s+", " ", re.sub(r"[「『“\"].*?[」』”\"]|[\d.:%]+\s*(秒|帧|dB|张|处|倍)?|[A-Za-z]+", " ", x)).strip(" ：:，,；;")
+        hint = "，".join(clean(x) for x in sec["lines"][:2])[:80]
+        own = sec.pop("_pic", None)
+        jobs.append({"sec": i, "prompt": (style + "，" if style else GEN_STYLE) + "画面里绝对不要出现任何文字、字母、数字和纸张。"
+                     + (own or f"用一个具体的物件或小场景来比喻：{clean(sec['t']) or '这一项改动'}，{hint}")})
+        sec["gen"] = True
+    return jobs
 
 
 def to_jpeg(src, dst, edge, q, dims):
@@ -386,8 +561,9 @@ def cmd_gen(jf):
     with open(jf) as f:
         job = json.load(f)
     c, cid, project = conf(), job["cid"], job["project"]
-    items = [{"n": i + 1, "oid": j["oid"], "prompt": j["prompt"], "state": "todo", "t": 0, "runs": 0}
-             for i, j in enumerate(job["jobs"])]
+    items = [{"n": i + 1, "oid": j.get("oid"), "sec": j.get("sec"), "prompt": j["prompt"], "state": "todo", "t": 0,
+              "runs": 0} for i, j in enumerate(job["jobs"])]
+    key = lambda it: {"sec": it["sec"]} if it["sec"] is not None else {"oid": it["oid"]}
     workers = [(f"出图{i + 1}", tpl) for i, tpl in enumerate(gen_cmds(c))]
     mu = threading.Lock()
     tmp = tempfile.mkdtemp(prefix="decide-gen-")
@@ -424,8 +600,8 @@ def cmd_gen(jf):
             shutil.copyfile(png, os.path.join(d, web))
             pic, names = {"src": base + web}, [web]
         upload(c, project, cid, d, names)
-        http(c, "POST", f"/api/cards/{cid}/pic", {"oid": it["oid"], "pic": pic})
-        log(f"第 {it['n']} 张（{it['oid']}）由 {name} 出完并补进卡片")
+        http(c, "POST", f"/api/cards/{cid}/pic", dict(key(it), pic=pic))
+        log(f"第 {it['n']} 张（{it['oid'] or '第 %d 节' % (it['sec'] + 1)}）由 {name} 出完并补进卡片")
 
     def worker(name, tpl):
         fails = 0
@@ -469,7 +645,7 @@ def cmd_gen(jf):
     for it in items:
         if it["state"] != "done":
             try:
-                http(c, "POST", f"/api/cards/{cid}/pic", {"oid": it["oid"], "failed": True})
+                http(c, "POST", f"/api/cards/{cid}/pic", dict(key(it), failed=True))
             except Exception:  # noqa: BLE001
                 pass
             log(f"第 {it['n']} 张没出来，卡片上去掉占位")
@@ -565,13 +741,35 @@ def cmd_push(a, kind):
                  or "Claude · " + repo_name(), "batch": a.batch or spec.get("batch", "")})
     if a.pname:
         spec["project_name"] = a.pname
+    plan_jobs, used = [], {o.get("media") for o in spec.get("options", [])}
+    if not getattr(a, "raw_svg", False):
+        for i, m in enumerate(media_in):
+            if i in used or not m["path"].lower().endswith(".svg"):
+                continue
+            plan = svg_plan(m["path"])
+            if plan:  # 字多的方案图：板上用网页文字排，原图留着「看原图」
+                m["role"] = "src"
+                spec["plan"] = plan
+                # 没配出图命令（DECIDE_GEN_CMD）就只转网页文字，不挂「配图生成中」占位
+                plan_jobs = plan_gen(plan, getattr(a, "gen_style", None)) if gen_cmds(c) else []
+                break
+    auto = []
+    if not getattr(a, "no_auto_link", False):
+        texts = [spec.get("title", ""), spec.get("sub", "")] + [v for _, v in spec.get("facts", [])]
+        for m in media_in:
+            if m["path"].lower().endswith(".svg"):
+                texts += svg_texts(m["path"])
+        auto = find_links(texts)
+    links = merge_links(spec.get("links"), [parse_link(x) for x in getattr(a, "link", None) or []], auto)
+    if links:
+        spec["links"] = links
     if media_in:
         tmp = tempfile.mkdtemp(prefix="decide-")
         try:
             with cf.ThreadPoolExecutor(min(8, len(media_in))) as ex:
                 futs = [ex.submit(prep_one, i, m, project, cid, tmp) for i, m in enumerate(media_in)]
                 res = [f.result() for f in futs]
-            spec["media"] = [r[0] for r in res]
+            spec["media"] = [dict(r[0], role="src") if m.get("role") == "src" else r[0] for r, m in zip(res, media_in)]
             upload(c, project, cid, tmp, [n for r in res for n in r[1]])
         except RuntimeError as e:
             die(str(e))
@@ -585,8 +783,8 @@ def cmd_push(a, kind):
     print(f"编号 {r['seq']:02d} · {r['url']}")
     sys.stdout.flush()
     gen = getattr(a, "_gen", {})
-    if gen:
-        jobs = [{"oid": spec["options"][i]["id"], "prompt": p} for i, p in sorted(gen.items())]
+    if gen or plan_jobs:
+        jobs = [{"oid": spec["options"][i]["id"], "prompt": p} for i, p in sorted(gen.items())] + plan_jobs
         start_gen(r["id"], project, jobs)
         print(f"配图在后台出（{len(jobs)} 张，出一张补一张；日志 {gen_log(r['id'])}）")
     if a.wait:
@@ -615,7 +813,7 @@ def cmd_q(a):
     """快问：一行推一道选择题。选项写「标签::一句代价」，第三段可带一张图 / SVG：「标签::代价::图.svg」。"""
     if len(a.opts) < 1:
         die('至少一个选项：decide q "问题" "A::说明" "B::说明"')
-    a.title, a.choice, a.opt, a.media = a.question, None, [], list(a.svg or [])
+    a.title, a.choice, a.opt, a.media = a.question, None, [], list(a.svg or []) + list(a.video or [])
     pics, gens = [], {}
     for i, x in enumerate(a.opts):
         parts = x.split("::")
@@ -861,6 +1059,91 @@ def cmd_show(a):
     return 0
 
 
+def cmd_replan(a):
+    """已经上板的卡：把字多的 SVG 方案图拆成网页文字 + 每节千问配图（不动答案、不打断等它的会话）。"""
+    c = conf()
+    for ref in a.refs:
+        ref = ref.lstrip("#")
+        card = (http(c, "GET", f"/api/cards?seq={int(ref)}&limit=1")["cards"] or [None])[0] if ref.isdigit() \
+            else http(c, "GET", f"/api/cards/{ref}")
+        if not card:
+            die(f"没有编号 {ref} 的卡片")
+        used = {o.get("media") for o in card["options"]}
+        idx = next((i for i, m in enumerate(card.get("media") or []) if m["src"].endswith(".svg") and i not in used
+                    and m.get("role") != "src"), None)
+        if idx is None:
+            print(f"{card['seq']:02d}：没有可拆的 SVG 方案图，跳过")
+            continue
+        src = card["media"][idx]["src"]
+        fd, tmp = tempfile.mkstemp(suffix=".svg")
+        os.close(fd)
+        try:
+            if c["ssh"] == "local":
+                shutil.copyfile(os.path.join(c["media_root"], src[len("/media/"):]), tmp)
+            else:
+                r = subprocess.run(["scp", "-q", f"{c['ssh']}:{c['media_root']}/{src[len('/media/'):]}", tmp],
+                                   stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+                if r.returncode:
+                    die(f"取原图失败：{r.stderr.strip()}")
+            plan = svg_plan(tmp)
+        finally:
+            os.unlink(tmp)
+        if not plan:
+            print(f"{card['seq']:02d}：这张图字不多，不拆")
+            continue
+        jobs = [] if a.no_pics or not gen_cmds(c) else plan_gen(plan, a.gen_style)
+        http(c, "POST", f"/api/cards/{card['id']}/plan", {"plan": plan, "src": idx})
+        print(f"{card['seq']:02d}：拆成 {len(plan['secs'])} 节，已换成网页文字")
+        if jobs:
+            start_gen(card["id"], card["project"], jobs)
+            print(f"  配图在后台出（{len(jobs)} 张；日志 {gen_log(card['id'])}）")
+    return 0
+
+
+def card_by_ref(c, ref):
+    ref = ref.lstrip("#")
+    card = (http(c, "GET", f"/api/cards?seq={int(ref)}&limit=1")["cards"] or [None])[0] if ref.isdigit() \
+        else http(c, "GET", f"/api/cards/{ref}")
+    if not card:
+        die(f"没有编号 {ref} 的卡片")
+    return card
+
+
+def fetch_media(c, src, dst):
+    if c["ssh"] == "local":
+        shutil.copyfile(os.path.join(c["media_root"], src[len("/media/"):]), dst)
+        return
+    r = subprocess.run(["scp", "-q", f"{c['ssh']}:{c['media_root']}/{src[len('/media/'):]}", dst],
+                       stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+    if r.returncode:
+        die(f"取原图失败：{r.stderr.strip()}")
+
+
+def cmd_link(a):
+    """已经上板的卡补可点链接：给了「名称::网址」就用给的，没给就从卡上的 SVG 和信息栏里认网址。"""
+    c = conf()
+    card = card_by_ref(c, a.ref)
+    if a.clear:
+        links = []
+    elif a.links:
+        links = merge_links([parse_link(x) for x in a.links])
+    else:
+        texts = [card.get("title", ""), card.get("sub", "")] + [v for _, v in card.get("facts", [])]
+        for m in card.get("media") or []:
+            if m["src"].endswith(".svg"):
+                fd, tmp = tempfile.mkstemp(suffix=".svg")
+                os.close(fd)
+                try:
+                    fetch_media(c, m["src"], tmp)
+                    texts += svg_texts(tmp)
+                finally:
+                    os.unlink(tmp)
+        links = merge_links(card.get("links"), find_links(texts))
+    http(c, "POST", f"/api/cards/{card['id']}/links", {"links": links})
+    print(f"{card['seq']:02d}：" + ("链接已清掉" if not links else "可点链接 " + "、".join(l["t"] or l["url"] for l in links)))
+    return 0
+
+
 def cmd_cancel(a):
     c = conf()
     rc = 0
@@ -972,6 +1255,8 @@ def main():
         p.add_argument("--file")
         p.add_argument("--fact", action="append")
         p.add_argument("--opt", action="append")
+        p.add_argument("--link", action="append", help="可点链接「名称::网址」，可多条；SVG 里写的网址会自动认")
+        p.add_argument("--no-auto-link", action="store_true")
         p.add_argument("--multi", action="store_true")
         p.add_argument("--no-note", action="store_true")
         p.add_argument("--note-hint")
@@ -988,7 +1273,11 @@ def main():
     p.add_argument("--pname")
     p.add_argument("--sub")
     p.add_argument("--svg", action="append", help="示意图（SVG / 图片），可多张")
+    p.add_argument("--video", action="append", help="要用户确认的视频，板上直接播放，可多条")
+    p.add_argument("--link", action="append", help="可点链接「名称::网址」，可多条；SVG 里写的网址会自动认")
+    p.add_argument("--no-auto-link", action="store_true")
     p.add_argument("--gen-style", help="配图统一风格（替换默认的扁平插画风格前缀）")
+    p.add_argument("--raw-svg", action="store_true", help="字多的方案图也照原样贴图，不拆成网页文字")
     p.add_argument("--rec", type=int, action="append", help="推荐第几个（从 1 数）")
     p.add_argument("--fact", action="append")
     p.add_argument("--multi", action="store_true")
@@ -1020,6 +1309,14 @@ def main():
     p.add_argument("-n", type=int, default=20)
     p = sub.add_parser("show")
     p.add_argument("ids", nargs="+")
+    p = sub.add_parser("replan")
+    p.add_argument("refs", nargs="+")
+    p.add_argument("--no-pics", action="store_true")
+    p.add_argument("--gen-style")
+    p = sub.add_parser("link")
+    p.add_argument("ref")
+    p.add_argument("links", nargs="*")
+    p.add_argument("--clear", action="store_true")
     p = sub.add_parser("cancel")
     p.add_argument("ids", nargs="+")
     p = sub.add_parser("project")
@@ -1039,7 +1336,7 @@ def main():
         return cmd_push(a, kind)
     if a.cmd == "q":
         return cmd_q(a)
-    return {"wait": cmd_wait, "listen": cmd_listen, "resolve": cmd_resolve, "chat": cmd_chat, "ls": cmd_ls, "show": cmd_show, "cancel": cmd_cancel, "project": cmd_project,
+    return {"wait": cmd_wait, "listen": cmd_listen, "resolve": cmd_resolve, "chat": cmd_chat, "ls": cmd_ls, "show": cmd_show, "replan": cmd_replan, "link": cmd_link, "cancel": cmd_cancel, "project": cmd_project,
             "open": cmd_open, "key": cmd_key, "doctor": cmd_doctor}[a.cmd](a)
 
 

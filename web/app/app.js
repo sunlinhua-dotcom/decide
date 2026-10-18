@@ -83,6 +83,9 @@ async function pollLoop() {
   }
 }
 document.addEventListener('visibilitychange', () => { if (!document.hidden) { stopFlash(); loadState().catch(() => {}); } });
+/* 手机锁屏 / 切后台回来：iOS 可能不发 visibilitychange（页面从缓存恢复），长轮询也可能挂在死连接上，再补两道 */
+window.addEventListener('pageshow', e => { if (e.persisted) loadState().catch(() => {}); });
+window.addEventListener('online', () => loadState().catch(() => {}));
 
 let baseTitle = 'decide', flashTimer = null;
 function startFlash() {
@@ -166,7 +169,7 @@ function curCard(ctx) {
   const q = queue(ctx.slug);
   let id = S.cur[ctx.key];
   if (!q.some(c => c.id === id)) {
-    const i = Math.min(ctx.idx ?? 0, q.length - 1);
+    const i = Math.min(Math.max(ctx.idx ?? 0, 0), q.length - 1); // 空队列时 idx 是 -1，新卡来了要从 0 取，否则停在「都定完了」
     id = i >= 0 ? q[i].id : null;
     S.cur[ctx.key] = id;
   }
@@ -224,10 +227,15 @@ function isBroken(label) { return /崩|错|废|旧版|上一版/.test(label || '
 /* 文字选择题：选项不带图，就把每个选项画成一块大卡片（示意图有的话放在上面） */
 /* 授权卡：本机 Claude 的钩子正等着这张卡，答了 Claude 就继续，所以不能撤回、不能「在对话里说」 */
 const isPerm = c => c.kind === 'perm';
+/* 不属于任何选项的图 = 整题的示意图；属于选项的图放进那个选项卡 */
+const figIdx = c => { const used = new Set((c.options || []).map(x => x.media).filter(m => m != null)); return (c.media || []).map((_, i) => i).filter(i => !used.has(i) && c.media[i].role !== 'src'); };
+/* 既有整题示意图、又有选项自带的图（392：两张方案图 + 三张选项小图）：示意图放上面，选项图进各自的卡，不再五张混排 */
+const mixed = c => (c.options || []).some(x => x.media != null) && figIdx(c).length > 0;
 function tileMode(c) {
   const opts = c.options || [];
   if (isPerm(c) && opts.every(x => x.media == null)) return true;
-  return opts.length >= 2 && opts.every(x => x.media == null) && (!(c.media || []).length || opts.some(x => x.desc));
+  if (mixed(c)) return true;
+  return opts.length >= 2 && opts.every(x => x.media == null) && (!figIdx(c).length || Boolean(c.plan) || opts.some(x => x.desc));
 }
 /* 每个普通选项都能「选它 + 写哪里要改」；通过 / 返修这类本身带意见框的、多选卡不加 */
 const canRevise = (c, x) => !isPerm(c) && !c.multi && c.status === 'pending' && x.style !== 'bad' && x.style !== 'good';
@@ -237,55 +245,148 @@ function reviseBtn(c, x, ctx, cls) {
 function tilesEl(c, ctx) {
   const opts = c.options || [], sel = S.multi.get(c.id) || new Set();
   const noting = S.note && S.note.id === c.id ? S.note.oid : null;
-  const n = opts.length, cols = n <= 4 ? n : n <= 6 ? 3 : 4;
-  return h('div', { class: 'tiles', style: `--n:${cols}`, role: 'group', 'aria-label': '选项' }, opts.map((x, i) => {
+  // 带图的选项排一行（最多 3 列），没图的（如「要改」）单独占一整行、排在下面，不和图卡抢格子
+  const pics = hasPics(c), pn = Math.min(3, opts.filter(x => optPic(c, x) || x.gen).length) || 1;
+  // 纯文字题：「要改」这类兜底项压成底下一条，正经选项按条数排满，不留空格子（401：4 句 + 要改 曾排成 3+2）
+  const slim = x => !pics && x.style === 'bad' && opts.length >= 3;
+  const main = opts.filter(x => !slim(x)), m = main.length;
+  const long = main.reduce((a, x) => a + (x.label || '').length, 0) / Math.max(1, m) > 14;
+  const cols = m <= 3 ? m : m === 4 ? (long ? 2 : 4) : m <= 6 ? 3 : 4;
+  return h('div', { class: 'tiles', style: `--n:${cols};--pn:${pn}`, role: 'group', 'aria-label': '选项' }, opts.map((x, i) => {
     const rv = canRevise(c, x);
-    return h('div', { class: 'tilew' + (rv ? ' has-rv' : '') },
+    return h('div', { class: 'tilew' + (rv ? ' has-rv' : '') + (pics && !(optPic(c, x) || x.gen) ? ' nopic' : '') + (slim(x) ? ' slim' : '') },
       h('button', { class: 'tile' + (x.style === 'good' ? ' go' : x.style === 'bad' ? ' no' : '') + (x.rec ? ' rec' : '') + (sel.has(x.id) || noting === x.id ? ' sel' : ''),
         type: 'button', 'data-oid': x.id, title: i < 9 ? '按 ' + (i + 1) + (rv ? '；Shift + ' + (i + 1) + ' 选它并写意见' : '') : '', onclick: () => choose(c, x.id, ctx) },
-        x.pic || x.gen ? picEl(x) : null,
-        h('span', { class: 'tile-k' }, i < 9 ? String(i + 1) : ''),
+        optPic(c, x) || x.gen ? picEl(c, x, ctx) : null,
+        h('span', { class: 'tile-k' }, c.multi ? h('span', { class: 'tile-ck', 'aria-hidden': 'true' }) : null, i < 9 ? String(i + 1) : ''),
         x.rec ? h('span', { class: 'tile-tag' }, '推荐') : null,
         h('span', { class: 'tile-t' }, x.label),
         x.desc ? h('span', { class: 'tile-d' }, x.desc) : null),
       rv ? reviseBtn(c, x, ctx) : null);
-  }));
+  }), c.multi && c.status === 'pending' ? multiBar(c, ctx) : null);
+}
+/* 多选：选项下面一条，写清可多选、已选几项，确定 / 确定并写意见都在手边（407 的确定按钮藏在标题旁） */
+function multiBar(c, ctx) {
+  const sel = S.multi.get(c.id) || new Set(), n = sel.size;
+  return h('div', { class: 'mbar' },
+    h('span', { class: 'mh' }, n ? `已选 ${n} 项` : '可多选：点卡片或按数字勾选', h('small', null, n ? '　回车确定' : '')),
+    h('button', { class: 'tx', type: 'button', disabled: !n, onclick: () => multiNote(c, ctx) }, '确定并写意见'),
+    h('button', { class: 'b go', type: 'button', disabled: !n, onclick: () => submit(c, [...sel], ctx) }, n ? `确定（${n} 项）` : '确定'));
 }
 /* 选项配图：后台千问出图，出来之前画占位 */
-function picEl(x) {
-  if (!x.pic) return h('span', { class: 'tile-pic wait', 'aria-hidden': 'true' }, h('span', null, '配图生成中…'));
-  return h('span', { class: 'tile-pic' }, h('img', { src: x.pic.src, alt: '', loading: 'lazy', decoding: 'async' }));
+function optPic(c, x) { return x.pic || (x.media != null ? (c.media || [])[x.media] : null); }
+function picEl(c, x, ctx) {
+  const p = optPic(c, x);
+  if (!p) return h('span', { class: 'tile-pic wait', 'aria-hidden': 'true' }, h('span', null, '配图生成中…'));
+  const own = x.media != null && p === (c.media || [])[x.media];
+  const ar = p.w && p.h ? `aspect-ratio:${p.w} / ${p.h}` : null;
+  // 选项自带的图点一下是放大看，不是选它（选它点卡片其余地方或按数字键）
+  const zoom = own ? e => { e.stopPropagation(); openLb(c, x.media, ctx); } : null;
+  return h('span', { class: 'tile-pic' + (/\.svg$/i.test(p.src) ? ' fit' : '') + (own ? ' zoomable' : ''), style: ar, title: own ? '点图放大' : null, onclick: zoom },
+    h('img', { src: p.thumb && !/\.svg$/i.test(p.src) ? p.thumb : p.src, alt: '', loading: 'lazy', decoding: 'async' }));
 }
-const hasPics = c => (c.options || []).some(x => x.pic || x.gen);
+const hasPics = c => (c.options || []).some(x => x.pic || x.gen || x.media != null);
 function stageEl(c, ctx, o) {
   if (!tileMode(c)) return mediaStage(c, ctx, o);
-  const has = (c.media || []).length > 0 || Boolean(c.code);
+  const has = figIdx(c).length > 0 || Boolean(c.code) || Boolean(c.plan);
   // 有示意图、选项不多：宽屏上选项卡竖排在图右边，图拿满整个高度（10-17 用户嫌 126 的图太小）
-  // 选项带配图时图要横着排开才看得清，不进右栏
-  const side = has && (c.options || []).length <= 5 && !hasPics(c);
-  const fig = (c.media || []).length ? mediaStage(c, ctx, o) : c.code ? codeEl(c) : null;
-  const q = h('div', { class: 'qstage' + (has ? ' has-fig' : '') + (side ? ' side' : '') + (hasPics(c) ? ' pics' : '') }, fig, tilesEl(c, ctx));
-  if (side) sideFit(q);
+  // 选项带图也进右栏：放不下时 sideFit 会加宽、排两列，再不行才挪到图下方（392 方案图被压到 112 px）
+  const side = has && (c.options || []).length <= 5;
+  const fig = c.plan ? planEl(c, ctx) : figIdx(c).length ? mediaStage(c, ctx, o, figIdx(c)) : c.code ? codeEl(c) : null;
+  const q = h('div', { class: 'qstage' + (has ? ' has-fig' : '') + (side ? ' side' : '') + (hasPics(c) ? ' pics' : '') + (c.plan ? ' planq' : '') }, fig, tilesEl(c, ctx));
+  // 方案没有固定宽高比（ars 为空）：求解器取放得下全部选项的最窄右栏，剩下的都给方案文字
+  if (side) sideFit(q, c.plan ? [] : figIdx(c).map(i => { const m = c.media[i]; return m.w && m.h ? m.w / m.h : 16 / 9; }));
   return q;
 }
-/* 右栏放不下全部选项（矮屏、选项说明长）：先把右栏加宽，再排成两列，还放不下就把选项挪回图下方（10-18 262 出框） */
-function sideFit(q) {
+/* 一组图在 W×H 里按最佳列数排，能画出的总面积（像素²） */
+function gridArea(ars, W, H, gap, cap) {
+  let best = 0;
+  for (let c = 1; c <= ars.length; c++) {
+    const r = Math.ceil(ars.length / c), cw = (W - gap * (c - 1)) / c, ch = (H - gap * (r - 1)) / r - cap;
+    if (cw <= 0 || ch <= 0) continue;
+    let a = 0;
+    for (const ar of ars) { const w = Math.min(cw, ch * ar); a += w * w / ar; }
+    best = Math.max(best, a);
+  }
+  return best;
+}
+/* 按示意图和选项图的真实宽高比精算排法（10-18 用户：画面浪费太多，要按图的比例动态算）：
+   右栏宽度 × 选项列数 × 选项图上限高度逐个试，再试「选项放下面」，
+   挑「示意图实际画出的面积 + 选项图实际画出的面积」最大、且选项全放得下的那一种。 */
+function sideFit(q, ars) {
   const wideQ = matchMedia('(min-width: 1100px)');
-  const over = () => { const t = q.querySelector('.tiles'); return t && t.scrollHeight > t.clientHeight + 2; };
+  const pics = q.classList.contains('pics');
+  const tilesOf = () => q.querySelector('.tiles');
+  const over = () => { const t = tilesOf(); return t && t.scrollHeight > t.clientHeight + 2; };
+  const picArea = () => {
+    let a = 0, minH = Infinity;
+    for (const sp of q.querySelectorAll('.tile-pic')) {
+      const b = sp.getBoundingClientRect(), img = sp.querySelector('img');
+      const ar = img && img.naturalWidth ? img.naturalWidth / img.naturalHeight : b.width / Math.max(1, b.height);
+      const w = Math.min(b.width, b.height * ar); a += w * w / ar; minH = Math.min(minH, w / ar);
+    }
+    return { a, minH };
+  };
+  const set = (k, v) => v == null ? q.style.removeProperty(k) : q.style.setProperty(k, v);
+  const apply = o => {
+    q.classList.toggle('side', o.side); q.classList.toggle('below', !o.side);
+    set('--sidew', o.side ? o.S + 'px' : null); set('--tcols', o.tc || null); set('--picmax', o.pm ? o.pm + 'vh' : null);
+  };
   const fit = () => {
     if (!q.isConnected || !q.clientHeight) return;
-    q.classList.remove('wide', 'two'); q.classList.add('side');
-    if (!wideQ.matches || !over()) return;
-    q.classList.add('wide');
-    if (!over()) return;
-    q.classList.add('two');
-    if (over()) q.classList.remove('side', 'wide', 'two');
+    if (!wideQ.matches) { apply({ side: false }); q.classList.remove('below'); return; }  // 手机照旧上下排
+    const W = q.clientWidth, H = q.clientHeight, GAP = 22, CAP = 30;
+    const pn = Number(getComputedStyle(tilesOf()).getPropertyValue('--pn')) || 1;
+    const tcs = pics ? [...new Set([pn, Math.min(2, pn), 1])] : [1, 2];
+    const pms = pics ? [56, 46, 38, 31, 25, 20, 16] : [0];
+    const PICMIN = Math.max(130, H * 0.2);
+    let best = null, loose = null;
+    const consider = (o, figW, figH) => {
+      // 示意图满是小字，面积优先给它；选项图只要认得出：每张至少 PICMIN 高，够了再按半权重往大里加
+      const f = gridArea(ars, figW, figH, 16, CAP), p = pics ? picArea() : { a: 0, minH: Infinity };
+      const a = f + 0.5 * p.a;
+      if (p.minH < PICMIN) { if (!loose || a > loose.a * 1.01) loose = { ...o, a }; return; }  // 屏太小谁都够不着保底，就退回面积最大的
+      if (!best || a > best.a * 1.01) best = { ...o, a };
+    };
+    for (const frac of [0.2, 0.24, 0.28, 0.33, 0.38, 0.44, 0.5, 0.56]) {
+      const S = Math.round(W * frac);
+      for (const tc of tcs) for (const pm of pms) {
+        if ((S - 10 * (tc - 1)) / tc < (pics ? 180 : 240)) continue;  // 每列选项太窄字会一字一行
+        const o = { side: true, S, tc, pm };
+        apply(o);
+        if (!over()) { consider(o, W - S - GAP, H); if (!pics) break; }
+      }
+    }
+    for (const pm of pms) {  // 选项放在示意图下面：示意图拿剩下的高度
+      const o = { side: false, pm };
+      apply(o);
+      const T = tilesOf().getBoundingClientRect().height;
+      if (H - T - 18 > H * 0.3) consider(o, W, H - T - 18);
+    }
+    apply(best || loose || { side: false });
   };
   let w = 0, hh = 0;
   new ResizeObserver(() => { if (q.clientWidth === w && q.clientHeight === hh) return; w = q.clientWidth; hh = q.clientHeight; fit(); }).observe(q);
   queueMicrotask(fit);
+  for (const img of q.querySelectorAll('.tile-pic img')) img.addEventListener('load', () => { w = 0; fit(); }, { once: true });
 }
 /* 完整命令 / 改动摘要 / 计划全文：等宽显示，长的先折叠 */
+/* 字多的方案图拆出来的方案：网页原生文字排（字号清楚），每节配一张千问示意图；原图在「看原图」里 */
+function planEl(c, ctx) {
+  const p = c.plan, src = (c.media || []).findIndex(m => m.role === 'src');
+  const pic = x => x.pic ? h('div', { class: 'plan-pic' }, h('img', { src: x.pic.thumb || x.pic.src, alt: '', loading: 'lazy' }))
+    : x.gen ? h('div', { class: 'plan-pic wait' }, '配图生成中…') : null;
+  return h('div', { class: 'plan' },
+    p.title || p.sub || src >= 0 ? h('div', { class: 'plan-h' },
+      h('div', null, p.title ? h('h2', null, p.title) : null, p.sub ? h('p', null, p.sub) : null),
+      src >= 0 ? h('button', { class: 'plan-src', type: 'button', onclick: () => openLb(c, src, ctx) }, '看原图') : null) : null,
+    (p.lines || []).length ? h('ul', { class: 'plan-l' }, p.lines.map(x => h('li', null, x))) : null,
+    (p.secs || []).length ? h('div', { class: 'plan-g' + (p.secs.length === 1 ? ' one' : '') }, p.secs.map((x, i) =>
+      h('section', { class: 'plan-s' + (x.pic || x.gen ? ' has-pic' : ''), style: x.color ? `--c:${x.color}` : null },
+        pic(x),
+        h('div', { class: 'plan-b' }, h('h3', null, x.t), x.lines.map(y => h('p', null, y)))))) : null,
+    (p.foot || []).length ? h('div', { class: 'plan-f' }, p.foot.map(x => h('p', null, x))) : null);
+}
 function codeEl(c) {
   const lines = c.code.split('\n').length;
   const long = lines > 16 || c.code.length > 1400;
@@ -295,17 +396,19 @@ function codeEl(c) {
   const btn = h('button', { class: 'more', type: 'button', onclick: () => { btn.textContent = pre.classList.toggle('fold') ? label : '收起'; } }, label);
   return h('div', { class: 'codew' }, pre, btn);
 }
-function mediaStage(c, ctx, o) {
-  const media = c.media || [];
+function mediaStage(c, ctx, o, only) {
+  const all = c.media || [], keep = only || all.map((_, i) => i).filter(i => all[i].role !== 'src'), media = keep.map(i => all[i]);
   const optOf = new Map((c.options || []).filter(x => x.media != null).map(x => [x.media, x]));
   const st = h('div', { class: 'stage' });
-  if (media.length > 1) gridFit(st, media, () => innerWidth <= 760 ? { gap: 8, cap: 22, h: innerHeight * 0.62 } : { gap: 16, cap: 30 });
+  // 选项名是一整句（429「A · 你的 AI 不慢，慢的是你」）时说明条排两行，算图高要多留一行
+  const longCap = keep.some(i => { const o = optOf.get(i); return o && o.label.length > 3; });
+  if (media.length > 1) gridFit(st, media, () => innerWidth <= 760 ? { gap: 8, cap: longCap ? 50 : 22, h: innerHeight * 0.62 } : { gap: 16, cap: longCap ? 62 : 30 });
   if (!media.length) {
     st.append(h('div', { class: 'noimg' }, '这张没有图，直接在下面选'));
     return st;
   }
-  media.forEach((m, i) => {
-    const opt = optOf.get(i);
+  keep.forEach(i => {
+    const m = all[i], opt = optOf.get(i);
     const ar = m.w && m.h ? `--ar:${m.w} / ${m.h}` : null;
     const frame = h('div', { class: 'frame', style: ar });
     if (m.kind === 'video') {
@@ -323,7 +426,7 @@ function mediaStage(c, ctx, o) {
       openLb(c, i, ctx);
     });
     const cap = h('div', { class: 'cap' },
-      opt ? h('span', { class: 'lt' }, opt.label) : (isBroken(m.label) ? h('i', { class: 'dot' }) : null),
+      opt ? h('span', { class: 'lt' + (opt.label.length > 3 ? ' long' : '') }, opt.label) : (isBroken(m.label) ? h('i', { class: 'dot' }) : null),
       opt && opt.rec ? h('span', { class: 'rec' }, '推荐') : null,
       h('span', null, opt ? (m.caption || '') : [m.label, m.caption ? ' · ' + m.caption : '']),
       m.kind === 'video' ? h('button', { class: 'zoom', type: 'button', onclick: () => openLb(c, i, ctx) }, '放大') : null,
@@ -345,9 +448,22 @@ function infoEl(c, ctx, o) {
     h('div', { class: 'seq', title: '在 Claude 里说「' + pad(c.seq) + ' 返修 …」就能指这一张' }, pad(c.seq)),
     h('div', { class: 'tt' },
       o.compact ? null : h('span', { class: 'proj' }, pname(c.project)),
-      h('h1', null, c.title),
-      c.sub ? h('p', null, c.sub) : null),
+      // 长标题在手机上字号小一档：三位数编号挤窄了标题列，40 字的标题会折成四行（441）
+      h('h1', { class: [...(c.title || '')].length > 30 ? 'long' : null }, c.title),
+      c.sub ? h('p', null, c.sub) : null,
+      o.compact ? null : linksEl(c)),
     actsEl(c, ctx));
+}
+
+// 完成卡里做完的站点、版本页：图里写的网址点不了，单独排一行可点的链接（450）
+function linksEl(c) {
+  const ls = c.links || [];
+  if (!ls.length) return null;
+  return h('div', { class: 'links' }, ls.map(l => {
+    let name = l.t;
+    if (!name) try { const u = new URL(l.url); name = (u.host + u.pathname).replace(/\/$/, ''); } catch { name = l.url; }
+    return h('a', { href: l.url, target: '_blank', rel: 'noopener noreferrer', title: l.url, onclick: e => e.stopPropagation() }, h('span', { class: 'lk-i', 'aria-hidden': 'true' }, '↗'), h('span', { class: 'lk-t' }, name));
+  }));
 }
 
 function actsEl(c, ctx) {
@@ -357,13 +473,21 @@ function actsEl(c, ctx) {
   const box = h('div', { class: 'acts' });
   if (!tileMode(c)) opts.forEach((x, i) => {
     const cls = 'b' + (x.media != null && x.label.length <= 2 ? ' lt' : '') + (x.style === 'good' ? ' go' : x.style === 'bad' ? ' no' : '') + (sel.has(x.id) ? ' sel' : '');
-    box.append(h('button', { class: cls, type: 'button', title: (x.desc ? x.desc + ' · ' : '') + '按 ' + (i + 1), 'data-oid': x.id, onclick: () => choose(c, x.id, ctx) }, x.label));
+    // 「A · 一整句」这种选项名：手机按钮只显示 A，全名在图下面（429）
+    const pre = (x.label.match(/^\s*([A-Za-z0-9]{1,2}|[①-⑩])\s*[·.、:：]\s*\S/) || [])[1];
+    box.append(h('button', { class: cls, type: 'button', title: (x.desc ? x.desc + ' · ' : '') + '按 ' + (i + 1), 'data-oid': x.id, onclick: () => choose(c, x.id, ctx) },
+      pre ? [h('span', { class: 'bl-full' }, x.label), h('span', { class: 'bl-short' }, pre)] : x.label));
   });
-  if (c.multi) box.append(h('button', { class: 'b go', type: 'button', disabled: !sel.size, onclick: () => submit(c, [...sel], ctx) }, '确定'));
+  if (c.multi && !tileMode(c)) box.append(h('button', { class: 'b go', type: 'button', disabled: !sel.size, onclick: () => submit(c, [...sel], ctx) }, sel.size ? `确定（${sel.size} 项）` : '确定'));
+  // 手机上选项一长串，确定条在最底下够不着：底部常驻栏里也放一个
+  if (c.multi && tileMode(c)) box.append(h('button', { class: 'b go mgo', type: 'button', disabled: !sel.size, onclick: () => submit(c, [...sel], ctx) }, sel.size ? `确定（${sel.size} 项）` : '先勾选'));
   if (isPerm(c)) return box;
   const grp = chatGroup(c);
-  box.prepend(h('button', { class: 'chat', type: 'button', title: '意见在 Claude 对话里打，这些卡从这里清掉（按 C）', onclick: () => toChat(c, ctx) },
-    grp.length > 1 ? `这 ${grp.length} 张在对话里说` : '在对话里说'));
+  // 两个文字链接竖着叠成一小列：按钮多的卡（429：A/B/C + 要改）横排会把标题挤成一列一个字
+  box.prepend(h('span', { class: 'chats' },
+    h('button', { class: 'chat', type: 'button', title: '意见在 Claude 对话里打，这些卡从这里清掉（按 C）', onclick: () => toChat(c, ctx) },
+      grp.length > 1 ? `这 ${grp.length} 张在对话里说` : '在对话里说'),
+    h('button', { class: 'chat', type: 'button', title: '不选现成选项，直接在这里写全部意见（按 W）', onclick: () => freeNote(c, ctx) }, '在这里写意见')));
   return box;
 }
 
@@ -371,7 +495,7 @@ const FACT_NAME = { '画面产品': '产品', '上次崩因': '上次', '这次�
 function factsEl(c, o) {
   const fs = (c.facts || []).filter(([k]) => !/^(文件|路径)/.test(k));
   const rv = (c.options || []).some(x => canRevise(c, x));
-  const keys = hover && !o.compact ? h('span', { class: 'keys' }, (c.options || []).slice(0, 4).map((x, i) => `${i + 1} ${x.label}`).join('　') + (rv ? '　Shift + 数字 选它并写意见' : '') + (isPerm(c) ? '　← → 翻页' : '　C 在对话里说　← → 翻页　Z 撤回')) : null;
+  const keys = hover && !o.compact ? h('span', { class: 'keys' }, (c.options || []).slice(0, 4).map((x, i) => `${i + 1} ${x.label}`).join('　') + (rv ? '　Shift + 数字 选它并写意见' : '') + (c.multi ? '　回车确定' : '') + (isPerm(c) ? '　← → 翻页' : '　W 在这里写意见　C 在对话里说　← → 翻页　Z 撤回')) : null;
   if (!fs.length && !keys) return null;
   return h('div', { class: 'facts' }, fs.map(([k, v]) => h('span', null, h('b', null, FACT_NAME[k] || k), v)), keys);
 }
@@ -421,31 +545,51 @@ function refreshActs(c, ctx) {
   if (a) a.replaceWith(actsEl(c, ctx));
   else { if (host && host._ui) host._ui.rev = null; render(); }
 }
+function freeNote(c, ctx) {
+  if (c.status !== 'pending' || isPerm(c)) return;
+  S.note = { id: c.id, oid: '__note', text: S.note && S.note.id === c.id ? S.note.text : '' };
+  S.cur[ctx.key] = c.id;
+  refreshActs(c, ctx);
+}
+function multiNote(c, ctx) {
+  const ids = [...(S.multi.get(c.id) || [])];
+  if (!ids.length || c.status !== 'pending') return;
+  S.note = { id: c.id, oid: '__multi', ids, text: S.note && S.note.id === c.id ? S.note.text : '' };
+  refreshActs(c, ctx);
+}
 function noteEl(c, ctx) {
-  const x = (c.options || []).find(o => o.id === S.note.oid) || { id: S.note.oid, label: '返修', style: 'bad' };
+  const free = S.note.oid === '__note', many = S.note.oid === '__multi';
+  const x = free ? { id: 'note', label: '写意见', style: 'bad' }
+    : many ? { id: '__multi', label: (c.options || []).filter(o => S.note.ids.includes(o.id)).map(o => o.label).join('、') }
+    : (c.options || []).find(o => o.id === S.note.oid) || { id: S.note.oid, label: '返修', style: 'bad' };
   const bad = x.style === 'bad';
-  const tip = c.note_hint || (bad ? '哪里要改？写清楚改哪、改成什么样' : `选「${x.label}」，但哪里要改？写清楚改哪、改成什么样`);
+  const tip = free ? (c.note_hint || '不用选现成选项，直接写：要哪个、哪里要改、改成什么样') : c.note_hint || (bad ? '哪里要改？写清楚改哪、改成什么样' : `选「${x.label}」，但哪里要改？写清楚改哪、改成什么样`);
   const ta = h('textarea', { class: 'note', rows: 2, placeholder: tip, 'aria-label': x.label + '意见' });
   ta.value = S.note.text || '';
   ta.addEventListener('input', () => { if (S.note) S.note.text = ta.value; });
-  const send = () => { const note = ta.value.trim(); S.note = null; submit(c, [x.id], ctx, note); };
+  const send = () => {
+    const note = ta.value.trim();
+    if (free && !note) { ta.focus(); return; }
+    const ids = many ? S.note.ids : [x.id];
+    S.note = null; submit(c, ids, ctx, note);
+  };
   const cancel = () => { S.note = null; refreshActs(c, ctx); };
   ta.addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); send(); }
     else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); cancel(); }
   });
   setTimeout(() => { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }, 30);
-  return h('div', { class: 'acts noting' }, bad ? null : h('div', { class: 'nfor' }, h('b', null, x.label), ' · 要改'), ta,
+  return h('div', { class: 'acts noting' }, free ? h('div', { class: 'nfor' }, h('b', null, '直接写意见'), ' · 不选现成选项') : bad ? null : h('div', { class: 'nfor' }, h('b', null, x.label), many ? ' · 附意见' : ' · 要改'), ta,
     h('div', { class: 'nbtns' },
       h('span', { class: 'nh' }, '回车提交 · Shift + 回车换行 · Esc 取消'),
       h('button', { class: 'tx', type: 'button', onclick: cancel }, '取消'),
-      h('button', { class: 'b no', type: 'button', onclick: send }, bad ? '提交' + x.label : '提交意见')));
+      h('button', { class: 'b no', type: 'button', onclick: send }, free ? '提交意见' : bad ? '提交' + x.label : '提交意见')));
 }
 function ctxHost(ctx) { return [$('#main'), ...$$('.q .qb')].find(el => el._ctx === ctx); }
 
 async function submit(c, choice, ctx, note) {
   if (!choice.length || c.status !== 'pending') return;
-  const labels = (c.options || []).filter(x => choice.includes(x.id)).map(x => x.label).join('、');
+  const labels = (c.options || []).filter(x => choice.includes(x.id)).map(x => x.label).join('、') || '写了意见';
     c.status = 'answered';
   S.multi.delete(c.id);
   render();
@@ -592,6 +736,8 @@ document.addEventListener('keydown', e => {
     e.preventDefault(); step(ctx, e.key === 'ArrowRight' ? 1 : -1);
   } else if ((e.key === 'c' || e.key === 'C') && c && !isPerm(c)) {
     e.preventDefault(); toChat(c, ctx);
+  } else if ((e.key === 'w' || e.key === 'W') && c && !isPerm(c)) {
+    e.preventDefault(); freeNote(c, ctx);
   } else if ((e.key === 'z' || e.key === 'Z') && S.last) {
     e.preventDefault(); const id = S.last; S.last = null; $('#toast').hidden = true; undo(id, ctx);
   } else if (e.key === 'Enter' && c && c.multi) {

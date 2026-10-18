@@ -19,6 +19,10 @@ No framework, no build step: a Python 3 standard-library server with SQLite, a v
 - **Text questions** — `decide q "question" "option::cost" …` renders every option as a big card; keys 1–9 answer, a recommended option is marked.
 - **`@prompt` options** — write `"A::cost::@a cat on a windowsill"` and the card goes up immediately; images are generated in the background by *your* image command and filled into the option cards as they arrive.
 - **SVG diagram cards** — attach a flow / architecture / comparison diagram with `--svg`; it renders crisp and loads in milliseconds.
+- **Dense plans become readable text** — a busy plan SVG (three or more boxed sections, 400+ characters) is split into native web text sections, each with an optional background-generated illustration; simple diagrams stay as they are. Open the original with "view original".
+- **Done cards you can click** — links on a card become buttons under the title: pass `--link "Docs::https://…"`, or just write the URL in the title, facts or SVG and it is picked up automatically. `decide q … --video clip.mp4` attaches the clip to confirm, playable right on the board. `decide link <n>` adds links to a card already on the board.
+- **Multi-select and free-form notes** — multi-select cards get checkboxes and a confirm bar; on any card press W ("write here") to answer with your own note instead of a preset option.
+- **Layout fitted to the content** — image cards size themselves from the real aspect ratios; long option lists and short screens keep the title visible.
 - **Always-on second screen** — long polling, so new cards appear instantly; projects as tabs, a four-up grid for four projects at once, per-project windows.
 - **On your phone** — thumb-reach buttons, swipe between cards, add to home screen, log in with a password.
 - **Claude Code relay** — permission requests, `AskUserQuestion`, plan approval and Claude Desktop's "start a new session?" offers become cards too. The board races Claude's own dialog: whichever you answer first wins and the other disappears. Secrets in commands are masked on the card.
@@ -173,6 +177,10 @@ Built by **BrightSun**, who runs a one-person studio with a crowd of AI agents a
 - **文字选择题**：`decide q "问题" "选项::一句代价" …` 把每个选项画成大卡片，按 1–9 直接选，标出推荐项。
 - **选项写 `@画面`，后台配图**：写 `"A::代价::@一只橘猫坐在窗台上"`，卡片立刻上板，配图用你自己的出图命令在后台出，出一张补一张。
 - **SVG 示意图卡**：用 `--svg` 附流程 / 架构 / 对比图，字清楚、秒开。
+- **密密麻麻的方案图转成网页文字**：三节以上、400 字以上的方案 SVG 自动拆成一节节网页原生文字，每节可在后台配一张图；简单的图照原样贴。「看原图」能看原图。
+- **完成卡能点开**：卡上的链接排在标题下面成按钮：写 `--link "文档::https://…"`，或者把网址写进标题、信息栏、SVG 里自动认出来。`decide q … --video 片.mp4` 附上要确认的片子，板上直接播放。`decide link <编号>` 给已上板的卡补链接。
+- **多选和自由意见**：多选卡有勾选框和确定条；任何卡按 W「在这里写意见」，不选现成选项、直接写自己的意见。
+- **按内容排版**：带图卡按图片真实比例算版面；选项多、屏幕矮时标题不会被盖住。
 - **副屏常开**：长轮询，新卡即时出现；项目分栏、四宫格同时看四个项目、每个项目单开一个窗口。
 - **手机上随时确认**：按钮在大拇指够得着的地方，左右滑翻卡，可添加到主屏幕，输密码登录。
 - **Claude 授权中继**：Claude Code 的授权确认、`AskUserQuestion` 提问、计划批准，以及 Claude Desktop「要不要开新会话」都会出卡。和 Claude 自己的对话框抢答，哪边先答算哪边，另一边自动消失；命令里的密钥在卡上打码。
