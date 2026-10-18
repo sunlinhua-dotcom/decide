@@ -1,0 +1,40 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: server + CLI · Python ${{ matrix.python }}${{ matrix.pillow && ' · Pillow' || '' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.13"]
+        pillow: [false, true]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install Pillow (thumbnail path)
+        if: matrix.pillow
+        run: python -m pip install Pillow
+      - name: End-to-end tests
+        run: python -m unittest discover -s tests -v
+
+  hooks:
+    name: Claude Code hooks · Node 22
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Hook tests
+        run: node --test tests/*.test.mjs

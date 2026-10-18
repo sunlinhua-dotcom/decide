@@ -1,5 +1,7 @@
 # Decide · 拍板
 
+[![tests](https://github.com/sunlinhua-dotcom/decide/actions/workflows/tests.yml/badge.svg)](https://github.com/sunlinhua-dotcom/decide/actions/workflows/tests.yml)
+
 **English** · [中文](#拍板--decide)
 
 When one person works with a crowd of AI agents, the agents keep stopping to ask: *is this cut good enough? which of these four frames? Postgres or SQLite? may I run this command?* Decide puts every one of those questions on a single board. Each question is a card; you answer one card at a time on a second screen or on your phone, and the answer goes straight back to the session that asked.

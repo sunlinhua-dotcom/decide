@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -14,10 +15,34 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+import zlib
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CLI = os.path.join(ROOT, "bin", "decide")
 KEY = "test-key-0123456789abcdef0123456789"  # gitleaks:allow (test-only key)
+
+
+def write_png(path, w, h):
+    """不靠任何库写一张 RGB 渐变 PNG。"""
+    rows = b"".join(b"\0" + b"".join(bytes((x * 4 % 256, y * 5 % 256, 128)) for x in range(w)) for y in range(h))
+
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+
+    with open(path, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+                + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
+
+def image_tool():
+    """和 bin/decide 的判断一致：macOS 用 sips，其他系统有 Pillow 用 Pillow，都没有就原图直传。"""
+    if shutil.which("sips"):
+        return "sips"
+    try:
+        import PIL.Image  # noqa: F401
+        return "pil"
+    except ImportError:
+        return None
 
 
 def free_port():
@@ -109,6 +134,28 @@ class ServerTest(unittest.TestCase):
         self.assertIn("sandbox", headers.get("Content-Security-Policy", ""))
         full = self.req(src)[2].decode()
         self.assertNotIn("<script", full)
+
+    def test_image_review_card(self):
+        png = os.path.join(self.tmp, "frame.png")
+        write_png(png, 64, 48)
+        r = self.cli("ask", "-p", "smoke", "-t", "Shot 1 · test frame", "--after", png, "--crash", "blurry", "--fix", "sharper")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        card = json.loads(self.req(f"/api/cards/{r.stdout.split()[0]}")[2])
+        self.assertEqual(card["kind"], "review")
+        self.assertEqual([o["label"] for o in card["options"]], ["通过", "返修"])
+        m = card["media"][0]
+        self.assertEqual(m["kind"], "img")
+        if image_tool():  # 出了 web / 缩略 / 原图三档，带尺寸
+            self.assertEqual((m["w"], m["h"]), (64, 48))
+            paths = [m["src"], m["thumb"], m["orig"]]
+        else:
+            self.assertNotIn("thumb", m)
+            paths = [m["src"]]
+        for src in paths:
+            code, headers, body = self.req(src)
+            self.assertEqual(code, 200, src)
+            self.assertTrue(headers.get("Content-Type", "").startswith("image/"), src)
+            self.assertGreater(len(body), 50, src)
 
     def test_web_needs_login(self):
         code, _, body = self.req("/", key=None)

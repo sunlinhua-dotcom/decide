@@ -22,6 +22,7 @@ python3 -m unittest discover -s tests -v     # server + CLI end to end
 node --test tests/*.test.mjs                        # Claude Code hook logic (Node 20.3+)
 ```
 
+- GitHub Actions runs both suites on every pull request (Python 3.9 and 3.13, with and without Pillow; Node 22).
 - Keep it dependency-free: the server and CLI use the Python standard library only; the web page has no build step.
 - One topic per pull request; describe what the user sees change, and add a screenshot for UI changes.
 - Add or update a test when you change the API, the CLI or the hooks.
@@ -43,7 +44,7 @@ node --test tests/*.test.mjs                        # Claude Code hook logic (No
 
 **本地跑起来**：照上面的命令，用 `DECIDE_HOME=/tmp/decide-dev` 指一个临时数据目录，不会碰到你正在用的板。网页在 `web/app/`，纯 HTML / CSS / JS，改完刷新即可；改了 `app.js` 或 `style.css` 记得把 `index.html`、`help.html` 里的 `?v=` 加一，让开着的页面拿到新文件。
 
-**提 PR 之前**：跑 `python3 -m unittest discover -s tests -v` 和 `node --test tests/*.test.mjs`，两套都要过。
+**提 PR 之前**：跑 `python3 -m unittest discover -s tests -v` 和 `node --test tests/*.test.mjs`，两套都要过。每个 PR 也会在 GitHub Actions 上自动跑（Python 3.9 和 3.13、装与不装 Pillow；Node 22）。
 
 - 保持零依赖：服务端和命令行只用 Python 标准库，网页不引入构建步骤。
 - 一个 PR 只做一件事，写清用户看到的变化，界面改动附截图。
