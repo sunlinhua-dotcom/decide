@@ -157,6 +157,52 @@ def clean_pic(m):
     return pic
 
 
+def clean_plan(raw):
+    """方案图拆出来的结构：标题 + 若干小节（标题、颜色、几行字、配图），网页用原生文字排，字号清楚。"""
+    if not isinstance(raw, dict):
+        return None
+    secs = raw.get("secs") or []
+    lines = raw.get("lines") or []
+    if not isinstance(secs, list) or len(secs) > 12 or not isinstance(lines, list) or len(lines) > 40:
+        raise Bad(400, "plan 至多 12 节、40 行")
+    plan = {"title": s(raw.get("title"), 200, "plan.title"), "sub": s(raw.get("sub"), 600, "plan.sub"),
+            "lines": [s(x, 400, "plan.lines") for x in lines if isinstance(x, str)],
+            "foot": [s(x, 400, "plan.foot") for x in (raw.get("foot") or [])[:8] if isinstance(x, str)], "secs": []}
+    for x in secs:
+        if not isinstance(x, dict):
+            raise Bad(400, "plan.secs 每项是对象")
+        sec = {"t": s(x.get("t"), 80, "plan.t"),
+               "lines": [s(y, 400, "plan.line") for y in (x.get("lines") or [])[:16] if isinstance(y, str)]}
+        color = x.get("color")
+        if isinstance(color, str) and re.fullmatch(r"#[0-9a-fA-F]{3,8}", color):
+            sec["color"] = color
+        if x.get("gen"):
+            sec["gen"] = True
+        pic = clean_pic(x.get("pic"))
+        if pic:
+            sec["pic"] = pic
+        plan["secs"].append(sec)
+    return plan if plan["secs"] or plan["lines"] else None
+
+
+def clean_links(raw):
+    """卡上可点的链接（完成卡里做完的站点、版本页等）：[{t, url}]，只收 http / https。"""
+    if raw in (None, []):
+        return []
+    if not isinstance(raw, list) or len(raw) > 12:
+        raise Bad(400, "links 至多 12 条")
+    out = []
+    for x in raw:
+        if not isinstance(x, dict):
+            raise Bad(400, "links 每条是 {t, url}")
+        url = s(x.get("url"), 2000, "link.url").strip()
+        if not re.match(r"https?://[^\s<>\"']+$", url):
+            raise Bad(400, "link.url 只能是 http(s) 网址")
+        if url not in {o["url"] for o in out}:
+            out.append({"t": s(x.get("t"), 60, "link.t").strip(), "url": url})
+    return out
+
+
 def clean_spec(raw):
     if not isinstance(raw, dict):
         raise Bad(400, "卡片必须是 JSON 对象")
@@ -212,6 +258,8 @@ def clean_spec(raw):
         for dim in ("w", "h"):
             if isinstance(m.get(dim), int):
                 item[dim] = m[dim]
+        if m.get("role") == "src":
+            item["role"] = "src"  # 已拆成 plan 的原图：不当示意图排，只在「看原图」里打开
         spec["media"].append(item)
     opts = raw.get("options") or []
     if not opts:
@@ -243,6 +291,12 @@ def clean_spec(raw):
         if pic:
             item["pic"] = pic
         spec["options"].append(item)
+    plan = clean_plan(raw.get("plan"))
+    if plan:
+        spec["plan"] = plan
+    links = clean_links(raw.get("links"))
+    if links:
+        spec["links"] = links
     return spec
 
 
@@ -414,6 +468,10 @@ class H(BaseHTTPRequestHandler):
                 return self.card_action(cid, p[2])
             if len(p) == 3 and m == "POST" and p[2] == "pic":
                 return self.set_pic(cid)
+            if len(p) == 3 and m == "POST" and p[2] == "plan":
+                return self.set_plan(cid)
+            if len(p) == 3 and m == "POST" and p[2] == "links":
+                return self.set_links(cid)
         if p == ["projects"]:
             if m == "GET":
                 with lock:
@@ -630,12 +688,15 @@ class H(BaseHTTPRequestHandler):
                 if isinstance(choice, str):
                     choice = [choice]
                 valid = {o["id"] for o in spec["options"]}
-                if not choice or any(c not in valid for c in choice):
+                note_only = choice == ["note"] and "note" not in valid  # 不选选项、直接在板上写全部意见
+                if note_only and not (raw.get("note") or "").strip():
+                    raise Bad(400, "意见是空的")
+                if not note_only and (not choice or any(c not in valid for c in choice)):
                     raise Bad(400, "选项不对")
                 if not spec.get("multi") and len(choice) != 1:
                     raise Bad(400, "这张卡只能选一个")
                 ans = {"choice": choice,
-                       "labels": [o["label"] for o in spec["options"] if o["id"] in choice],
+                       "labels": ["写了意见"] if note_only else [o["label"] for o in spec["options"] if o["id"] in choice],
                        "note": s(raw.get("note"), 4000, "note"),
                        "at": now, "device": s(raw.get("device"), 80, "device")}
                 db.execute("UPDATE cards SET status='answered', answer=?, updated=?, rev=rev+1, acked=? WHERE id=?",
@@ -663,7 +724,11 @@ class H(BaseHTTPRequestHandler):
         with lock:
             r = get_card(cid)
             spec = json.loads(r["spec"])
-            x = next((o for o in spec["options"] if o["id"] == raw.get("oid")), None)
+            secs = (spec.get("plan") or {}).get("secs") or []
+            if isinstance(raw.get("sec"), int) and 0 <= raw["sec"] < len(secs):
+                x = secs[raw["sec"]]  # 方案小节的配图
+            else:
+                x = next((o for o in spec["options"] if o["id"] == raw.get("oid")), None)
             if not x:
                 raise Bad(400, "没有这个选项")
             pic = clean_pic(raw.get("pic"))
@@ -672,6 +737,41 @@ class H(BaseHTTPRequestHandler):
             x.pop("gen", None)
             if pic:
                 x["pic"] = pic
+            now = time.time()
+            db.execute("UPDATE cards SET spec=?, updated=?, rev=rev+1 WHERE id=?",
+                       (json.dumps(spec, ensure_ascii=False), now, cid))
+            bump()
+            self.send(200, card_json(get_card(cid)))
+
+    def set_plan(self, cid):
+        """已经上板的卡补一份 plan（decide replan 用）：{plan, src: 原图在 media 里的下标}。"""
+        raw = self.body_json()
+        plan = clean_plan(raw.get("plan"))
+        if not plan:
+            raise Bad(400, "plan 是空的")
+        with lock:
+            r = get_card(cid)
+            spec = json.loads(r["spec"])
+            spec["plan"] = plan
+            i = raw.get("src")
+            if isinstance(i, int) and 0 <= i < len(spec["media"]):
+                spec["media"][i]["role"] = "src"
+            now = time.time()
+            db.execute("UPDATE cards SET spec=?, updated=?, rev=rev+1 WHERE id=?",
+                       (json.dumps(spec, ensure_ascii=False), now, cid))
+            bump()
+            self.send(200, card_json(get_card(cid)))
+
+    def set_links(self, cid):
+        """已经上板的卡补 / 换链接（decide link 用）：{links: [{t, url}]}，空列表清掉。"""
+        links = clean_links(self.body_json().get("links"))
+        with lock:
+            r = get_card(cid)
+            spec = json.loads(r["spec"])
+            if links:
+                spec["links"] = links
+            else:
+                spec.pop("links", None)
             now = time.time()
             db.execute("UPDATE cards SET spec=?, updated=?, rev=rev+1 WHERE id=?",
                        (json.dumps(spec, ensure_ascii=False), now, cid))

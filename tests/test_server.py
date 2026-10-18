@@ -135,6 +135,57 @@ class ServerTest(unittest.TestCase):
         full = self.req(src)[2].decode()
         self.assertNotIn("<script", full)
 
+    def test_done_card_links(self):
+        svg = os.path.join(self.tmp, "done.svg")
+        with open(svg, "w") as f:
+            f.write('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 200"><text x="10" y="40">Shipped</text>'
+                    '<text x="10" y="80">Site: app.example.com, status 200</text></svg>')
+        r = self.cli("q", "Done, what next?", "Stop", "Fix::say what", "-p", "smoke", "--svg", svg,
+                     "--link", "Docs::https://docs.example.com/guide")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        cid = r.stdout.split()[0]
+        card = json.loads(self.req(f"/api/cards/{cid}")[2])
+        self.assertEqual([l["url"] for l in card["links"]], ["https://docs.example.com/guide", "https://app.example.com"])
+        self.assertEqual(card["links"][0]["t"], "Docs")
+        code, _, _ = self.req(f"/api/cards/{cid}/links", "POST", {"links": [{"t": "x", "url": "javascript:alert(1)"}]})
+        self.assertEqual(code, 400)
+        self.assertEqual(self.cli("link", cid, "--clear").returncode, 0)
+        self.assertNotIn("links", json.loads(self.req(f"/api/cards/{cid}")[2]))
+
+    def test_note_only_answer(self):
+        cid = self.cli("q", "Which way?", "Left", "Right", "-p", "smoke").stdout.split()[0]
+        code, _, _ = self.req(f"/api/cards/{cid}/answer", "POST", {"choice": ["note"], "note": ""})
+        self.assertEqual(code, 400)
+        code, _, body = self.req(f"/api/cards/{cid}/answer", "POST", {"choice": ["note"], "note": "neither, go up"})
+        self.assertEqual(code, 200, body)
+        card = json.loads(self.req(f"/api/cards/{cid}")[2])
+        self.assertEqual(card["status"], "answered")
+        self.assertEqual(card["answer"]["note"], "neither, go up")
+
+    def test_only_dense_svg_becomes_web_text(self):
+        def plan_svg(path, n, lines):
+            parts = ['<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 900">',
+                     '<text x="40" y="50" font-size="30">Plan for the next release</text>']
+            for i in range(n):
+                y = 90 + i * 260
+                parts.append(f'<g><rect x="40" y="{y}" width="1100" height="240" fill="#fff" stroke="#333"/>'
+                             f'<text x="60" y="{y + 40}" font-size="22" font-weight="700">Step {i + 1} heading</text>')
+                parts += [f'<text x="60" y="{y + 80 + j * 34}" font-size="18">{lines}</text>' for j in range(4)]
+                parts.append("</g>")
+            with open(path, "w") as f:
+                f.write("".join(parts) + "</svg>")
+        simple, dense = os.path.join(self.tmp, "simple.svg"), os.path.join(self.tmp, "dense.svg")
+        plan_svg(simple, 2, "one short line here")
+        plan_svg(dense, 3, "a longer sentence that explains what changes in this step and why")
+        for path, want in ((simple, False), (dense, True)):
+            r = self.cli("q", "Plan ok?", "Yes", "No", "-p", "smoke", "--svg", path)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            card = json.loads(self.req(f"/api/cards/{r.stdout.split()[0]}")[2])
+            self.assertEqual(bool(card.get("plan")), want, path)
+            if want:
+                self.assertEqual(len(card["plan"]["secs"]), 3)
+                self.assertFalse(any(s.get("gen") for s in card["plan"]["secs"]))  # 没配出图命令就不挂占位
+
     def test_image_review_card(self):
         png = os.path.join(self.tmp, "frame.png")
         write_png(png, 64, 48)
