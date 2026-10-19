@@ -496,3 +496,63 @@ pre code { white-space: pre; }
   .plan-pic { width: 100%; }
 }
 @media (prefers-reduced-motion: reduce) { .plan-pic.wait { animation: none; } }
+
+/* 派活（10-20）：文字 + 附件交给分拣台 */
+.right a[hidden] { display: none; }
+.ph { max-width: 760px; }
+.ph-sub { color: var(--ink-2); margin: -8px 0 20px; max-width: 40em; }
+.ph-box { border: 1px solid var(--line); background: #fff; padding: 18px; display: grid; gap: 14px; transition: border-color .15s, box-shadow .15s; }
+.ph-box.drop { border-color: var(--red); box-shadow: inset 0 0 0 2px var(--red); }
+.ph-ta, .ph-in { width: 100%; font: inherit; font-size: 16px; line-height: 1.6; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 0; padding: 12px 14px; -webkit-appearance: none; }
+.ph-ta { min-height: 168px; resize: vertical; }
+.ph-ta:focus, .ph-in:focus { outline: none; border-color: var(--ink); background: #fff; }
+.ph-meta { display: grid; grid-template-columns: 1fr 1.6fr; gap: 10px; }
+.ph-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.ph-add { position: relative; display: inline-flex; align-items: baseline; gap: 10px; border: 1px dashed var(--ink-3); padding: 10px 16px; cursor: pointer; }
+.ph-add span { font-size: 15px; color: var(--ink); }
+.ph-add small { font-size: 12px; color: var(--ink-3); }
+.ph-add:hover, .ph-add:focus-within { border-color: var(--ink); }
+.ph-file { position: absolute; inset: 0; opacity: 0; width: 100%; cursor: pointer; font-size: 0; }
+.ph-lim { font-size: 12px; color: var(--ink-3); }
+.ph-chips { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 10px; }
+.ph-chips:empty { display: none; }
+.ph-chip { position: relative; display: grid; grid-template-rows: 84px auto auto; gap: 2px; background: var(--paper); border: 1px solid var(--line); padding: 0 0 6px; font-size: 12px; min-width: 0; }
+.ph-chip img, .ph-chip .ext { width: 100%; height: 84px; object-fit: cover; display: block; background: var(--paper-3); }
+.ph-chip .ext { display: grid; place-items: center; font-family: var(--num); font-size: 20px; color: var(--ink-2); }
+.ph-chip .nm { padding: 2px 8px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; word-break: normal; }
+.ph-chip .st { padding: 0 8px; color: var(--ink-3); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ph-chip.bad { border-color: var(--red); }
+.ph-chip.bad .st { color: var(--red); }
+.ph-chip .bar { position: absolute; left: 0; right: 0; top: 81px; height: 3px; background: transparent; }
+.ph-chip .bar i { display: block; height: 100%; width: 0; background: var(--ink); transition: width .2s; }
+.ph-chip.ok .bar, .ph-chip.bad .bar { display: none; }
+.ph-chip .rm { position: absolute; top: 4px; right: 4px; width: 26px; height: 26px; border-radius: 50%; background: rgba(20,20,20,.72); color: #fff; font-size: 16px; line-height: 26px; text-align: center; }
+.ph-chip .rt { position: absolute; top: 4px; left: 4px; padding: 3px 9px; border-radius: 999px; background: var(--red); color: #fff; font-size: 12px; }
+.ph-go { justify-self: start; background: var(--ink); color: var(--paper); padding: 13px 34px; font-size: 16px; font-family: var(--zh); letter-spacing: .04em; border-radius: 999px; }
+.ph-go:hover { background: #000; }
+.ph-go:disabled { background: var(--paper-3); color: var(--ink-3); cursor: default; }
+.ph-recent { margin-top: 34px; }
+.ph-recent h3 { font-size: 13px; color: var(--ink-3); font-weight: 400; margin-bottom: 6px; }
+.ph-item { display: grid; grid-template-columns: 9em minmax(0, 1fr) auto; gap: 14px; align-items: baseline; padding: 12px 0; border-top: 1px solid var(--line); }
+.ph-item .t { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 14px; }
+.ph-item .m { font-size: 12px; color: var(--ink-3); margin-top: 2px; }
+.ph-recent .err { color: var(--red); }
+.ph-st { font-size: 13px; white-space: nowrap; }
+.ph-item.queued .ph-st { color: var(--ink); }
+.ph-item.sending .ph-st, .ph-item.submitted .ph-st { color: #b07a16; }
+.ph-item.failed .ph-st { color: var(--red); }
+.ph-item .x { font-size: 13px; color: var(--red); white-space: nowrap; text-decoration: underline; text-underline-offset: 3px; }
+@media (max-width: 760px) {
+  .ph-box { padding: 14px; margin: 0 -2px; }
+  .ph-meta { grid-template-columns: 1fr; }
+  .ph-chips { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .ph-chip { grid-template-rows: 72px auto auto; }
+  .ph-chip img, .ph-chip .ext { height: 72px; }
+  .ph-chip .bar { top: 69px; }
+  .ph-add { flex: 1 1 100%; justify-content: center; padding: 14px 16px; }
+  .ph-go { justify-self: stretch; padding: 15px 0; }
+  .ph-item { grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; }
+  .ph-item .ph-st { grid-column: 1; }
+  .ph-item > div { grid-column: 1; }
+  .ph-item > .x, .ph-item > span:last-child { grid-column: 2; grid-row: 1 / span 2; align-self: center; }
+}

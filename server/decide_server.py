@@ -11,12 +11,15 @@ import mimetypes
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOST = os.environ.get("DECIDE_HOST", "127.0.0.1")
@@ -86,6 +89,10 @@ CREATE TABLE IF NOT EXISTS cards(
 CREATE INDEX IF NOT EXISTS cards_status ON cards(status);
 CREATE INDEX IF NOT EXISTS cards_project ON cards(project);
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS intakes(
+  id TEXT PRIMARY KEY, created REAL NOT NULL, updated REAL NOT NULL, status TEXT NOT NULL,
+  text TEXT NOT NULL DEFAULT '', chat TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
+  files TEXT NOT NULL DEFAULT '[]', ref TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '');
 """)
 cols = {r["name"] for r in db.execute("PRAGMA table_info(cards)")}
 for col, ddl in (("seq", "INTEGER"), ("session", "TEXT NOT NULL DEFAULT ''"), ("acked", "INTEGER NOT NULL DEFAULT 0"),
@@ -346,6 +353,184 @@ def get_card(cid):
     return r
 
 
+# ---------------- 派活入口（10-20）：网页上交文字 + 附件，转给分拣台 ----------------
+INTAKE_CONF = os.environ.get("DECIDE_INTAKE_CONF", os.path.join(HOME, "intake.json"))
+INTAKE_UP = os.environ.get("DECIDE_INTAKE_UP", os.path.join(HOME, "intake-up"))
+INTAKE_MAX = 95 * 1024 * 1024  # 浏览器经 Cloudflare 上传，免费档单个请求上限 100 MB
+INTAKE_FILES = 30
+FID_RE = re.compile(r"^u[0-9a-f]{16}$")
+IK_RE = re.compile(r"^[0-9a-f]{16}$")
+
+
+def intake_conf():
+    """每次现读，改配置不用重启。两种去处：
+    {"gateway": "http://…", "token": "…", "capability": "route.intake"}：交给任务网关（POST /v1/files 传附件、POST /v1/jobs 交件，见 README）；
+    {"dir": "/path"}：直接写进本机目录，每件一个子目录（item.json + files/）。都没有就不开放派活入口。"""
+    try:
+        with open(INTAKE_CONF) as f:
+            c = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if (c.get("gateway") and c.get("token")) or c.get("dir"):
+        return c
+    return None
+
+
+def safe_name(name, i=0):
+    b = os.path.basename(str(name or "")).strip()
+    b = re.sub(r"[\x00-\x1f/\\]", "_", b).lstrip(".")[:120]
+    return b or f"file_{i + 1}"
+
+
+def intake_json(r):
+    return {"id": r["id"], "created": r["created"], "updated": r["updated"], "status": r["status"],
+            "text": r["text"][:300], "chat": r["chat"], "note": r["note"],
+            "files": [{"name": f["name"], "size": f["size"]} for f in json.loads(r["files"] or "[]")],
+            "ref": r["ref"], "error": r["error"]}
+
+
+def sweep_intake_up():
+    """浏览器传上来、两天还没交出去的附件清掉。"""
+    try:
+        cut = time.time() - 2 * 86400
+        for n in os.listdir(INTAKE_UP):
+            fp = os.path.join(INTAKE_UP, n)
+            if os.path.getmtime(fp) < cut:
+                os.remove(fp)
+    except OSError:
+        pass
+
+
+def gw_call(c, method, path, body=None, data=None, headers=None, timeout=60):
+    h = {"Authorization": "Bearer " + c["token"], "User-Agent": "decide-intake/1"}
+    h.update(headers or {})
+    if body is not None:
+        data = json.dumps(body, ensure_ascii=False).encode()
+        h["Content-Type"] = "application/json"
+    req = urllib.request.Request(c["gateway"].rstrip("/") + path, data=data, method=method, headers=h)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        try:
+            msg = json.loads(e.read()).get("error") or str(e)
+        except Exception:  # noqa: BLE001
+            msg = str(e)
+        raise RuntimeError(f"网关返回 {e.code}：{msg}")
+    except (urllib.error.URLError, OSError) as e:
+        raise RuntimeError(f"连不上网关：{e}")
+
+
+def intake_forward(c, row):
+    """返回 (status, ref)：queued = 已进分拣台收件箱（ref 是件号）；submitted = 网关受理了还没跑完（ref 是任务号）。失败抛 RuntimeError。"""
+    files = json.loads(row["files"] or "[]")
+    params = {k: row[k] for k in ("text", "chat", "note") if row[k]}
+    if c.get("gateway"):
+        fids = []
+        for f in files:
+            fp = os.path.join(INTAKE_UP, f["id"])
+            if not os.path.exists(fp):
+                raise RuntimeError(f"附件 {f['name']} 已过期，请重新添加")
+            with open(fp, "rb") as fh:
+                r = gw_call(c, "POST", "/v1/files", data=fh, timeout=600,
+                            headers={"X-Filename": quote(f["name"]), "Content-Type": "application/octet-stream",
+                                     "Content-Length": str(os.path.getsize(fp))})
+            fids.append(r["file_id"])
+        job = gw_call(c, "POST", "/v1/jobs", {"capability": c.get("capability") or "route.intake", "params": params,
+                                              "inputs": {"files": fids} if fids else {},
+                                              "idempotency_key": "decide-" + row["id"]})
+        jid = job.get("job_id") or ""
+        end = time.time() + 40
+        while True:
+            st = job.get("status")
+            if st == "done":
+                res = job.get("result") or {}
+                return "queued", str(res.get("inbox_id") or jid)
+            if st in ("failed", "rejected", "expired", "cancelled", "interrupted"):
+                raise RuntimeError(f"网关任务{st}：{job.get('error') or job.get('hint') or ''}".strip("："))
+            if time.time() > end or not jid:
+                return "submitted", jid
+            job = gw_call(c, "GET", f"/v1/jobs/{jid}?wait=15", timeout=30)
+    d = c["dir"]
+    os.makedirs(d, exist_ok=True)
+    name = time.strftime("%Y%m%dT%H%M%S") + "-" + row["id"]
+    tmp, dst = os.path.join(d, ".tmp-" + name), os.path.join(d, name)
+    os.makedirs(os.path.join(tmp, "files"), exist_ok=True)
+    names = []
+    for i, f in enumerate(files):
+        fp = os.path.join(INTAKE_UP, f["id"])
+        if not os.path.exists(fp):
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise RuntimeError(f"附件 {f['name']} 已过期，请重新添加")
+        n = f"{i + 1:02d}-{safe_name(f['name'], i)}"
+        shutil.copyfile(fp, os.path.join(tmp, "files", n))
+        names.append(n)
+    with open(os.path.join(tmp, "item.json"), "w", encoding="utf-8") as fh:
+        json.dump({"via": "decide", "job": row["id"], "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "chat": row["chat"],
+                   "text": row["text"], "note": row["note"], "files": names}, fh, ensure_ascii=False, indent=1)
+    os.replace(tmp, dst)  # 整件写完再改名，收件方不会读到半截
+    return "queued", name
+
+
+def intake_run(c, iid):
+    """后台线程里转发一件；附件只在交出去以后才删，失败留着好重试。"""
+    with lock:
+        row = db.execute("SELECT * FROM intakes WHERE id=?", (iid,)).fetchone()
+    try:
+        status, ref = intake_forward(c, row)
+        err = ""
+    except Exception as e:  # noqa: BLE001
+        status, ref, err = "failed", "", str(e)[:300]
+    with lock:
+        db.execute("UPDATE intakes SET status=?, ref=?, error=?, updated=? WHERE id=?", (status, ref, err, time.time(), iid))
+    if status != "failed":
+        for f in json.loads(row["files"] or "[]"):
+            for ext in ("", ".json"):
+                try:
+                    os.remove(os.path.join(INTAKE_UP, f["id"] + ext))
+                except OSError:
+                    pass
+
+
+INTAKE_CHECKING = set()
+
+
+def intake_check(c, iid, jid):
+    try:
+        job = gw_call(c, "GET", f"/v1/jobs/{jid}", timeout=15)
+        st = job.get("status")
+        if st == "done":
+            upd = ("queued", str((job.get("result") or {}).get("inbox_id") or jid), "")
+        elif st in ("failed", "rejected", "expired", "cancelled", "interrupted"):
+            upd = ("failed", jid, f"网关任务{st}：{job.get('error') or ''}".rstrip("："))
+        else:
+            upd = None
+        if upd:
+            with lock:
+                db.execute("UPDATE intakes SET status=?, ref=?, error=?, updated=? WHERE id=? AND status='submitted'",
+                           upd + (time.time(), iid))
+    except Exception:  # noqa: BLE001
+        pass
+    finally:
+        INTAKE_CHECKING.discard(iid)
+
+
+def intake_refresh(c):
+    """看列表时顺手收尾：网关还在跑的去问一下；服务重启丢了线程、一直卡在「交件中」的标成失败。"""
+    now = time.time()
+    with lock:
+        db.execute("UPDATE intakes SET status='failed', error='交件中断（服务重启），请重试', updated=? "
+                   "WHERE status='sending' AND updated<?", (now, now - 900))
+        rows = db.execute("SELECT id, ref FROM intakes WHERE status='submitted' AND ref!='' AND created>?",
+                          (now - 7 * 86400,)).fetchall()
+    if not (c and c.get("gateway")):
+        return
+    for r in rows:
+        if r["id"] not in INTAKE_CHECKING:
+            INTAKE_CHECKING.add(r["id"])
+            threading.Thread(target=intake_check, args=(c, r["id"], r["ref"]), daemon=True).start()
+
+
 def sweep_expired():
     """钩子被强杀时卡片没人撤：过了 expires 的待定卡自动撤销。调用方持锁。"""
     now = time.time()
@@ -462,6 +647,12 @@ class H(BaseHTTPRequestHandler):
             return self.ack()
         if m == "GET" and p == ["session"]:
             return self.session_state()
+        if p == ["intake"] and m in ("GET", "POST"):
+            return self.intake_info() if m == "GET" else self.intake_submit()
+        if m == "POST" and p == ["intake", "file"]:
+            return self.intake_file()
+        if m == "POST" and len(p) == 3 and p[0] == "intake" and IK_RE.match(p[1]) and p[2] == "retry":
+            return self.intake_retry(p[1])
         if p == ["cards"]:
             return self.list_cards() if m == "GET" else self.create_card()
         if len(p) >= 2 and p[0] == "cards" and ID_RE.match(p[1]):
@@ -582,7 +773,7 @@ class H(BaseHTTPRequestHandler):
             pending = db.execute("SELECT * FROM cards WHERE status='pending' ORDER BY created").fetchall()
             done = db.execute("SELECT * FROM cards WHERE status!='pending' ORDER BY updated DESC LIMIT 400").fetchall()
             self.send(200, {"ver": VER[0], "now": time.time(), "projects": project_rows(),
-                            "listeners": dict(LISTENERS),
+                            "listeners": dict(LISTENERS), "intake": bool(intake_conf()),
                             "cards": [card_json(r) for r in pending + done]})
 
     def poll(self):
@@ -872,6 +1063,88 @@ class H(BaseHTTPRequestHandler):
                 left -= len(chunk)
         os.replace(tmp, os.path.join(d, name))
         self.send(201, {"src": f"/media/{slug}/{cid}/{name}"})
+
+    # ---------- 派活入口 ----------
+    def intake_info(self):
+        c = intake_conf()
+        intake_refresh(c)
+        with lock:
+            rows = db.execute("SELECT * FROM intakes ORDER BY created DESC LIMIT 20").fetchall()
+        self.send(200, {"enabled": bool(c), "via": ("gateway" if c.get("gateway") else "dir") if c else "",
+                        "max_bytes": INTAKE_MAX, "max_files": INTAKE_FILES, "recent": [intake_json(r) for r in rows]})
+
+    def intake_file(self):
+        if not intake_conf():
+            raise Bad(404, "派活入口没开")
+        n = int(self.headers.get("Content-Length") or 0)
+        if n <= 0:
+            raise Bad(400, "文件是空的")
+        if n > INTAKE_MAX:
+            raise Bad(413, f"单个文件不能超过 {INTAKE_MAX >> 20} MB")
+        name = safe_name(unquote(self.headers.get("X-Filename") or ""))
+        os.makedirs(INTAKE_UP, exist_ok=True)
+        sweep_intake_up()
+        fid = "u" + secrets.token_hex(8)
+        fp = os.path.join(INTAKE_UP, fid)
+        left = n
+        with open(fp + ".part", "wb") as f:
+            while left > 0:
+                chunk = self.rfile.read(min(left, 1 << 20))
+                if not chunk:
+                    raise Bad(400, "上传中断")
+                f.write(chunk)
+                left -= len(chunk)
+        os.replace(fp + ".part", fp)
+        with open(fp + ".json", "w", encoding="utf-8") as f:
+            json.dump({"name": name, "size": n}, f, ensure_ascii=False)
+        self.send(201, {"id": fid, "name": name, "size": n})
+
+    def intake_submit(self):
+        c = intake_conf()
+        if not c:
+            raise Bad(404, "派活入口没开")
+        raw = self.body_json()
+        key = str(raw.get("key") or "")
+        iid = key if IK_RE.match(key) else secrets.token_hex(8)
+        with lock:
+            old = db.execute("SELECT * FROM intakes WHERE id=?", (iid,)).fetchone()
+        if old and old["status"] != "failed":  # 同一次提交重发：原样返回，不重复交件
+            return self.send(200, intake_json(old))
+        text, chat, note = (str(raw.get(k) or "").strip()[:n] for k, n in (("text", 20000), ("chat", 120), ("note", 2000)))
+        files = []
+        for fid in (raw.get("files") or [])[:INTAKE_FILES]:
+            if not isinstance(fid, str) or not FID_RE.match(fid):
+                raise Bad(400, "附件编号不对")
+            try:
+                with open(os.path.join(INTAKE_UP, fid + ".json"), encoding="utf-8") as f:
+                    meta = json.load(f)
+            except (OSError, ValueError):
+                raise Bad(400, "有附件已过期，请删掉重新添加")
+            files.append({"id": fid, "name": meta["name"], "size": meta["size"]})
+        if not text and not files:
+            raise Bad(400, "文字和附件至少给一样")
+        now = time.time()
+        with lock:
+            db.execute("INSERT OR REPLACE INTO intakes(id,created,updated,status,text,chat,note,files) VALUES(?,?,?,?,?,?,?,?)",
+                       (iid, now, now, "sending", text, chat, note, json.dumps(files, ensure_ascii=False)))
+            row = db.execute("SELECT * FROM intakes WHERE id=?", (iid,)).fetchone()
+        threading.Thread(target=intake_run, args=(c, iid), daemon=True).start()
+        self.send(200, intake_json(row))
+
+    def intake_retry(self, iid):
+        c = intake_conf()
+        if not c:
+            raise Bad(404, "派活入口没开")
+        with lock:
+            r = db.execute("SELECT * FROM intakes WHERE id=?", (iid,)).fetchone()
+            if not r:
+                raise Bad(404, "没有这一件")
+            if r["status"] != "failed":
+                return self.send(200, intake_json(r))
+            db.execute("UPDATE intakes SET status='sending', error='', updated=? WHERE id=?", (time.time(), iid))
+            row = db.execute("SELECT * FROM intakes WHERE id=?", (iid,)).fetchone()
+        threading.Thread(target=intake_run, args=(c, iid), daemon=True).start()
+        self.send(200, intake_json(row))
 
 
 class Server(ThreadingHTTPServer):

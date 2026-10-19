@@ -27,6 +27,7 @@ No framework, no build step: a Python 3 standard-library server with SQLite, a v
 - **On your phone** — thumb-reach buttons, swipe between cards, add to home screen, log in with a password.
 - **Claude Code relay** — permission requests, `AskUserQuestion`, plan approval and Claude Desktop's "start a new session?" offers become cards too. The board races Claude's own dialog: whichever you answer first wins and the other disappears. Secrets in commands are masked on the card.
 - **"I'll say it in chat"** — dismiss a batch of cards and give feedback in the conversation instead; the agent is told not to ask again.
+- **Hand work back the other way** — an optional "派活" (intake) page: paste a client's message, attach photos, screenshots or files straight from a phone camera or album (drag-and-drop and paste on desktop), and hand it to your triage agent. See *Intake* below.
 
 ## Quick start
 
@@ -140,6 +141,20 @@ export DECIDE_GEN_CMD='my-image-tool {prompt} --out {out} --width {w} --height {
 
 Several commands, one per line (or a JSON array in `gen_cmd`), race each other: each takes the next image, and an idle one re-runs an image another has been stuck on for 25 seconds. A card is never blocked by image generation; options without a picture can still be chosen.
 
+**Intake ("派活").** The page appears in the header only when `$DECIDE_HOME/intake.json` exists (re-read on every request, override the path with `DECIDE_INTAKE_CONF`). Attachments upload as soon as they are added (≤ 95 MB each, ≤ 30 per item, kept for two days if not handed over); the item is then forwarded in the background and the page shows its status, with a retry button on failure. Two destinations:
+
+```json
+{ "dir": "/path/to/triage/inbox" }
+```
+
+writes one folder per item (`item.json` with `text`, `chat`, `note`, `files`, plus `files/`), renamed into place only when complete;
+
+```json
+{ "gateway": "https://jobs.example.com", "token": "…", "capability": "route.intake" }
+```
+
+uploads each file with `POST /v1/files` (raw body, `X-Filename` header) and submits `POST /v1/jobs {capability, params: {text, chat, note}, inputs: {files}, idempotency_key}`, then follows `GET /v1/jobs/<id>`. The token stays on the server; give it the narrowest scope your gateway allows.
+
 ## Deploying
 
 For use beyond one machine, run the server behind HTTPS. [`deploy/Caddyfile.example`](deploy/Caddyfile.example) is a complete Caddy site (automatic certificates, long-poll friendly), and [`deploy/decide.service.example`](deploy/decide.service.example) a systemd unit. Set `DECIDE_PUBLIC=https://your-domain`, `DECIDE_TRUST_PROXY=1` and a `DECIDE_PASSWORD`. A Cloudflare Tunnel in front of `127.0.0.1:8796` works the same way.
@@ -196,6 +211,7 @@ Built by **BrightSun**, who runs a one-person studio with a crowd of AI agents a
 - **手机上随时确认**：按钮在大拇指够得着的地方，左右滑翻卡，可添加到主屏幕，输密码登录。
 - **Claude 授权中继**：Claude Code 的授权确认、`AskUserQuestion` 提问、计划批准，以及 Claude Desktop「要不要开新会话」都会出卡。和 Claude 自己的对话框抢答，哪边先答算哪边，另一边自动消失；命令里的密钥在卡上打码。
 - **「在对话里说」**：一组卡一键清掉，改在对话里提意见，AI 不会再追问这几张。
+- **反过来派活**：可选的「派活」页，粘客户原话、手机直接拍照 / 从相册或文件加附件（电脑可拖放、粘贴截图），交给你的分拣 Agent。见下方配置说明。
 
 ## 快速开始
 
@@ -262,6 +278,7 @@ bin/decide ask -p demo -t "T12 杯子特写 · 手柄朝右" --before old.jpg --
 
 - 服务端默认只听 `127.0.0.1:8796`，数据放 `./data`；对外用时设 `DECIDE_PUBLIC=https://你的域名`、`DECIDE_TRUST_PROXY=1`，再设一个 `DECIDE_PASSWORD` 方便手机登录。
 - 命令行默认连 `http://127.0.0.1:8796`；连远端服务就设 `DECIDE_BASE` 和 `DECIDE_KEY`，或写进 `~/.config/decide/config.json`。
+- **派活入口**：`$DECIDE_HOME/intake.json` 存在才在顶栏出现（每次现读，路径可用 `DECIDE_INTAKE_CONF` 改）。写 `{"dir": "收件箱目录"}` 就每件落一个子目录（`item.json` + `files/`，写完才改名）；写 `{"gateway": "…", "token": "…", "capability": "route.intake"}` 就经任务网关的 `POST /v1/files`、`POST /v1/jobs` 交件。附件单个 95 MB 以内、一次最多 30 个；令牌只放服务器，权限给到最小。
 - **`@画面` 配图**：`DECIDE_GEN_CMD` 指向任何能出一张图的命令，`{prompt}` `{out}` `{w}` `{h}` 会被整体替换（不经过 shell）。多条命令一行一条（或在 `gen_cmd` 里写数组），它们从同一个队列抢活，谁空谁出；配图永远不挡卡片，没图的选项照样能选。
 
 ## 部署
