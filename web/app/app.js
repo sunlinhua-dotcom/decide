@@ -3,6 +3,19 @@
 
 const $ = (sel, el = document) => el.querySelector(sel);
 const $$ = (sel, el = document) => Array.from(el.querySelectorAll(sel));
+/* 「推荐」两个字一律醒目（10-19 用户定）：拆出来包一层，颜色按底色在 style.css .kw-rec 里换 */
+// 节标题本身是红色时，「推荐」改琥珀色才看得出
+function isRed(c) {
+  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(c || '').trim());
+  if (!m) return /^(red|crimson|firebrick|tomato)$/i.test(String(c || '').trim());
+  const x = m[1].length === 3 ? [...m[1]].map(ch => ch + ch).join('') : m[1];
+  const [r, g, b] = [0, 2, 4].map(i => parseInt(x.slice(i, i + 2), 16));
+  return r > 150 && g < 110 && b < 110;
+}
+function hl(t) {
+  if (t == null || t === '' || !String(t).includes('推荐')) return t;
+  return String(t).split(/(推荐)/).filter(Boolean).map(p => p === '推荐' ? h('b', { class: 'kw-rec' }, p) : p);
+}
 function h(tag, attrs, ...kids) {
   const el = document.createElement(tag);
   if (attrs) for (const [k, v] of Object.entries(attrs)) {
@@ -219,10 +232,11 @@ function emptyEl(slug) {
     h('p', null, (slug ? pname(slug) + '没有待定的卡片。' : '') + '新卡片会自己出现，页面开着就行。'));
 }
 /* 几张图就并排几张：试每种列数，选让图片总面积最大的那种 */
+const NARROW = 260, CAP_NARROW = 70; // 与 style.css 里 @container (max-width: 260px) 的说明行高度一致
 function bestCols(ars, W, H, gap, cap) {
   const n = ars.length; let best = 1, bestA = -1;
   for (let c = 1; c <= n; c++) {
-    const r = Math.ceil(n / c), cw = (W - gap * (c - 1)) / c, ch = (H - gap * (r - 1)) / r - cap;
+    const r = Math.ceil(n / c), cw = (W - gap * (c - 1)) / c, ch = (H - gap * (r - 1)) / r - (typeof cap === 'function' ? cap(cw) : cap);
     if (cw <= 0 || ch <= 0) continue;
     let a = 0;
     for (const ar of ars) { const w = Math.min(cw, ch * ar); a += w * w / ar; }
@@ -286,8 +300,8 @@ function tilesEl(c, ctx) {
         optPic(c, x) || x.gen ? picEl(c, x, ctx) : null,
         h('span', { class: 'tile-k' }, c.multi ? h('span', { class: 'tile-ck', 'aria-hidden': 'true' }) : null, i < 9 ? String(i + 1) : ''),
         x.rec ? h('span', { class: 'tile-tag' }, '推荐') : null,
-        h('span', { class: 'tile-t' }, x.label),
-        x.desc ? h('span', { class: 'tile-d' }, x.desc) : null),
+        h('span', { class: 'tile-t' }, hl(x.label)),
+        x.desc ? h('span', { class: 'tile-d' }, hl(x.desc)) : null),
       rv ? reviseBtn(c, x, ctx) : null);
   }), c.multi && c.status === 'pending' ? multiBar(c, ctx) : null);
 }
@@ -404,14 +418,14 @@ function planEl(c, ctx) {
     : x.gen ? h('div', { class: 'plan-pic wait' }, '配图生成中…') : null;
   return h('div', { class: 'plan' },
     p.title || p.sub || src >= 0 ? h('div', { class: 'plan-h' },
-      h('div', null, p.title ? h('h2', null, p.title) : null, p.sub ? h('p', null, p.sub) : null),
+      h('div', null, p.title ? h('h2', null, hl(p.title)) : null, p.sub ? h('p', null, hl(p.sub)) : null),
       src >= 0 ? h('button', { class: 'plan-src', type: 'button', onclick: () => openLb(c, src, ctx) }, '看原图') : null) : null,
-    (p.lines || []).length ? h('ul', { class: 'plan-l' }, p.lines.map(x => h('li', null, x))) : null,
+    (p.lines || []).length ? h('ul', { class: 'plan-l' }, p.lines.map(x => h('li', null, hl(x)))) : null,
     (p.secs || []).length ? h('div', { class: 'plan-g' + (p.secs.length === 1 ? ' one' : '') }, p.secs.map((x, i) =>
-      h('section', { class: 'plan-s' + (x.pic || x.gen ? ' has-pic' : ''), style: x.color ? `--c:${x.color}` : null },
+      h('section', { class: 'plan-s' + (x.pic || x.gen ? ' has-pic' : '') + (isRed(x.color) ? ' rc' : ''), style: x.color ? `--c:${x.color}` : null },
         pic(x),
-        h('div', { class: 'plan-b' }, h('h3', null, x.t), x.lines.map(y => h('p', null, y)))))) : null,
-    (p.foot || []).length ? h('div', { class: 'plan-f' }, p.foot.map(x => h('p', null, x))) : null);
+        h('div', { class: 'plan-b' }, h('h3', null, hl(x.t)), x.lines.map(y => h('p', null, hl(y))))))) : null,
+    (p.foot || []).length ? h('div', { class: 'plan-f' }, p.foot.map(x => h('p', null, hl(x)))) : null);
 }
 function codeEl(c) {
   const lines = c.code.split('\n').length;
@@ -428,7 +442,10 @@ function mediaStage(c, ctx, o, only) {
   const st = h('div', { class: 'stage' });
   // 选项名是一整句（429「A · 你的 AI 不慢，慢的是你」）时说明条排两行，算图高要多留一行
   const longCap = keep.some(i => { const o = optOf.get(i); return o && o.label.length > 3; });
-  if (media.length > 1) gridFit(st, media, () => innerWidth <= 760 ? { gap: 8, cap: longCap ? 50 : 22, h: innerHeight * 0.62 } : { gap: 16, cap: longCap ? 62 : 30 });
+  // 格子窄（743：八张竖图排三四列）时说明行固定两行高、「要改」放第一行，算排法时按这个高度留
+  const hasTxt = keep.some(i => optOf.get(i) ? all[i].caption : (all[i].label || all[i].caption));
+  const capOf = (base, cw) => hasTxt && cw < NARROW ? Math.max(base, CAP_NARROW) : base;
+  if (media.length > 1) gridFit(st, media, () => innerWidth <= 760 ? { gap: 8, cap: cw => capOf(longCap ? 50 : 22, cw), h: innerHeight * 0.62 } : { gap: 16, cap: cw => capOf(longCap ? 62 : 30, cw) });
   if (!media.length) {
     st.append(h('div', { class: 'noimg' }, '这张没有图，直接在下面选'));
     return st;
@@ -451,10 +468,11 @@ function mediaStage(c, ctx, o, only) {
       if (e.target.tagName === 'VIDEO') return;
       openLb(c, i, ctx);
     });
-    const cap = h('div', { class: 'cap' },
-      opt ? h('span', { class: 'lt' + (opt.label.length > 3 ? ' long' : '') }, opt.label) : (isBroken(m.label) ? h('i', { class: 'dot' }) : null),
+    const txt = opt ? (m.caption || '') : [m.label, m.caption ? ' · ' + m.caption : ''].join('');
+    const cap = h('div', { class: 'cap' + (txt ? ' txt' : '') },
+      opt ? h('span', { class: 'lt' + (opt.label.length > 3 ? ' long' : '') }, hl(opt.label)) : (isBroken(m.label) ? h('i', { class: 'dot' }) : null),
       opt && opt.rec ? h('span', { class: 'rec' }, '推荐') : null,
-      h('span', null, opt ? (m.caption || '') : [m.label, m.caption ? ' · ' + m.caption : '']),
+      h('span', { class: 'ct', title: txt || null }, hl(txt)),
       m.kind === 'video' ? h('button', { class: 'zoom', type: 'button', onclick: () => openLb(c, i, ctx) }, '放大') : null,
       opt && canRevise(c, opt) ? reviseBtn(c, opt, ctx, 'rv cap-rv') : null);
     st.append(h('figure', { class: 'fig' + (opt ? ' pick' : '') }, frame, cap));
@@ -485,8 +503,8 @@ function infoEl(c, ctx, o) {
     h('div', { class: 'tt' },
       o.compact ? null : h('span', { class: 'proj' }, pname(c.project)),
       // 长标题在手机上字号小一档：三位数编号挤窄了标题列，40 字的标题会折成四行（441）
-      h('h1', { class: [...(c.title || '')].length > 30 ? 'long' : null }, c.title),
-      c.sub ? h('p', null, c.sub) : null,
+      h('h1', { class: [...(c.title || '')].length > 30 ? 'long' : null }, hl(c.title)),
+      c.sub ? h('p', null, hl(c.sub)) : null,
       o.compact ? null : linksEl(c)),
     actsEl(c, ctx));
 }
@@ -512,7 +530,7 @@ function actsEl(c, ctx) {
     // 「A · 一整句」这种选项名：手机按钮只显示 A，全名在图下面（429）
     const pre = (x.label.match(/^\s*([A-Za-z0-9]{1,2}|[①-⑩])\s*[·.、:：]\s*\S/) || x.label.match(/^\s*([①-⑳])\s+\S/) || [])[1];
     box.append(h('button', { class: cls + (pre ? ' hs' : ''), type: 'button', title: (x.desc ? x.desc + ' · ' : '') + '按 ' + (i + 1), 'data-oid': x.id, onclick: () => choose(c, x.id, ctx) },
-      pre ? [h('span', { class: 'bl-full' }, x.label), h('span', { class: 'bl-short' }, pre)] : x.label));
+      pre ? [h('span', { class: 'bl-full' }, hl(x.label)), h('span', { class: 'bl-short' }, pre)] : hl(x.label)));
   });
   // 手机上「③ ④ ⑤ … 都还油」混排：缩写成编号的按钮均分，没编号的按字长给够，不被截成「都…」（611）
   const hs = box.querySelectorAll('.b.hs').length;
@@ -536,7 +554,7 @@ function factsEl(c, o) {
   const rv = (c.options || []).some(x => canRevise(c, x));
   const keys = hover && !o.compact ? h('span', { class: 'keys' }, (c.options || []).slice(0, 4).map((x, i) => `${i + 1} ${x.label}`).join('　') + (rv ? '　Shift + 数字 选它并写意见' : '') + (c.multi ? '　回车确定' : '') + (isPerm(c) ? '　← → 翻页' : '　W 在这里写意见　C 在对话里说　← → 翻页　Z 撤回')) : null;
   if (!fs.length && !keys) return null;
-  return h('div', { class: 'facts' }, fs.map(([k, v]) => h('span', null, h('b', null, FACT_NAME[k] || k), v)), keys);
+  return h('div', { class: 'facts' }, fs.map(([k, v]) => h('span', null, h('b', null, FACT_NAME[k] || k), hl(v))), keys);
 }
 
 function railEl(q, ctx) {
@@ -738,7 +756,7 @@ function renderDone(main) {
     return h('div', { class: 'row' },
       h('span', { class: 'n s' }, pad(c.seq)),
       m ? h('img', { src: m.thumb || m.src, alt: '', loading: 'lazy' }) : h('span', { class: 'ph' }),
-      h('div', null, h('div', { class: 't' }, c.title), h('div', { class: 'm' }, meta), a.note ? h('div', { class: 'm' }, '备注：' + a.note) : null),
+      h('div', null, h('div', { class: 't' }, hl(c.title)), h('div', { class: 'm' }, meta), a.note ? h('div', { class: 'm' }, '备注：' + a.note) : null),
       h('span', { class: 'v' + (c.status === 'cancelled' ? ' cx' : bad ? ' no' : '') }, verdict),
       isPerm(c) ? h('span') : h('button', { class: 'x', type: 'button', onclick: async () => {
         try { await api('/api/cards/' + c.id + '/reopen', { method: 'POST', body: {} }); S.cur['f:' + c.project] = c.id; go('/p/' + c.project); }
@@ -864,7 +882,7 @@ function drawLb() {
   const opt = (c.options || []).find(x => x.media === LB.i);
   hideLoupe();
   stage.classList.remove('zoomed');
-  $('#lb-t').replaceChildren(h('span', { class: 'n' }, pad(c.seq)), c.title);
+  $('#lb-t').replaceChildren(h('span', { class: 'n' }, pad(c.seq)), hl(c.title));
   $('#lb-prev').hidden = $('#lb-next').hidden = media.length < 2 || LB.grid;
   if (LB.grid) return drawLbGrid(c, media);
   const tools = [
@@ -899,7 +917,7 @@ function drawLb() {
   const hint = m.kind === 'img' && !LB.cmp ? (fine ? '移上去看细节，滚轮调倍数' : '点图放大，再点还原') : null;
   foot.replaceChildren(...kids(
     h('div', { class: 'lb-meta' },
-      h('span', { class: 'lb-lab' }, label),
+      h('span', { class: 'lb-lab' }, hl(label)),
       media.length > 1 ? h('span', { class: 'n' }, `${LB.i + 1} / ${media.length}`) : null,
       m.w && !LB.cmp ? h('span', null, `${m.w} × ${m.h}`) : null,
       hint ? h('span', null, hint) : null, files),
@@ -921,7 +939,7 @@ function drawLbGrid(c, media) {
       el.addEventListener('click', () => { LB.grid = false; LB.i = k; drawLb(); });
     }
     box.append(h('figure', { class: 'lb-cell' + (k === LB.i ? ' cur' : '') }, h('div', { class: 'im' }, el),
-      h('figcaption', null, o ? h('b', null, o.label) : (isBroken(m.label) ? h('i', { class: 'dot' }) : null), h('span', null, o ? (m.caption || m.label || '') : [m.label, m.caption ? ' · ' + m.caption : '']))));
+      h('figcaption', null, o ? h('b', null, o.label) : (isBroken(m.label) ? h('i', { class: 'dot' }) : null), h('span', null, hl(o ? (m.caption || m.label || '') : [m.label, m.caption ? ' · ' + m.caption : ''].join(''))))));
   });
   stage.replaceChildren(box);
   gridFit(box, media, () => innerWidth <= 760 ? { gap: 8, cap: 24 } : { gap: 14, cap: 28 });
