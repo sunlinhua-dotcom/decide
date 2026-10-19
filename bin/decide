@@ -992,7 +992,7 @@ SYN = {"过": "ok", "通过": "ok", "可以": "ok", "ok": "ok", "OK": "ok", "行
 def cmd_resolve(a):
     c = conf()
     ref = a.ref.lstrip("#")
-    if ref.isdigit():
+    if is_seq(ref):
         found = http(c, "GET", f"/api/cards?seq={int(ref)}&limit=1")["cards"]
         if not found:
             die(f"没有编号 {ref} 的卡片")
@@ -1024,7 +1024,7 @@ def cmd_chat(a):
     ids = []
     for ref in a.refs:
         ref = ref.lstrip("#")
-        if ref.isdigit():
+        if is_seq(ref):
             found = http(c, "GET", f"/api/cards?seq={int(ref)}&limit=1")["cards"]
             if not found:
                 die(f"没有编号 {ref} 的卡片")
@@ -1064,7 +1064,7 @@ def cmd_replan(a):
     c = conf()
     for ref in a.refs:
         ref = ref.lstrip("#")
-        card = (http(c, "GET", f"/api/cards?seq={int(ref)}&limit=1")["cards"] or [None])[0] if ref.isdigit() \
+        card = (http(c, "GET", f"/api/cards?seq={int(ref)}&limit=1")["cards"] or [None])[0] if is_seq(ref) \
             else http(c, "GET", f"/api/cards/{ref}")
         if not card:
             die(f"没有编号 {ref} 的卡片")
@@ -1100,9 +1100,14 @@ def cmd_replan(a):
     return 0
 
 
+def is_seq(ref):
+    """纯数字且不到 8 位才是卡片编号；卡片 id 是 8 位十六进制，约 2% 恰好全是数字，要按 id 查"""
+    return ref.isdigit() and len(ref) < 8
+
+
 def card_by_ref(c, ref):
     ref = ref.lstrip("#")
-    card = (http(c, "GET", f"/api/cards?seq={int(ref)}&limit=1")["cards"] or [None])[0] if ref.isdigit() \
+    card = (http(c, "GET", f"/api/cards?seq={int(ref)}&limit=1")["cards"] or [None])[0] if is_seq(ref) \
         else http(c, "GET", f"/api/cards/{ref}")
     if not card:
         die(f"没有编号 {ref} 的卡片")
