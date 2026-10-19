@@ -434,6 +434,8 @@ pre code { white-space: pre; }
 
 .bl-short { display: none; }
 @media (max-width: 760px) {
+  .acts.mixs .b.hs { flex: 1 1 0; }
+  .acts.mixs .b:not(.hs) { flex: 1 0 auto; }
   .acts .chats { display: flex; order: 9; flex-basis: 100%; justify-content: space-around; flex-direction: row; gap: 10px; }
   .acts .chats .chat { flex: 1; }
   .bl-full { display: none; }
