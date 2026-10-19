@@ -186,8 +186,11 @@ function renderFocus(host, ctx, o) {
   }
   if (ui.id !== c.id || ui.rev !== c.rev) {
     ui.root.classList.toggle('textq', tileMode(c));
+    // 手机上带图 / 视频的卡：题目和选项按钮一起钉在底部，图在上面；不然题目排在图下面、被底栏盖住（525）
+    ui.root.classList.toggle('sheet', !o.compact && !tileMode(c));
     ui.root.replaceChildren(...kids(stageEl(c, ctx, o), infoEl(c, ctx, o), factsEl(c, o), o.compact ? null : railEl(q, ctx)));
     ui.id = c.id; ui.rev = c.rev;
+    if (!o.compact) watchSheet(ui.root);
   } else if (!o.compact) {
     const old = $('.rail', ui.root), nr = railEl(q, ctx);
     old ? old.replaceWith(nr) : ui.root.append(nr);
@@ -441,6 +444,16 @@ function mediaStage(c, ctx, o, only) {
     if (Math.abs(dx) > 70 && Math.abs(dy) < 50) step(ctx, dx < 0 ? 1 : -1);
   }, { passive: true });
   return st;
+}
+
+// 底栏多高，图区就让出多高（标题行数、链接、正在写意见都会变高）
+let sheetRO;
+function watchSheet(root) {
+  const info = $('.info', root);
+  sheetRO?.disconnect();
+  if (!info || !root.classList.contains('sheet') || typeof ResizeObserver === 'undefined') return root.style.removeProperty('--sheet');
+  sheetRO = new ResizeObserver(() => root.style.setProperty('--sheet', Math.ceil(info.getBoundingClientRect().height) + 'px'));
+  sheetRO.observe(info);
 }
 
 function infoEl(c, ctx, o) {

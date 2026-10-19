@@ -348,7 +348,7 @@ pre code { white-space: pre; }
   .tt h1.long { font-size: 19px; }
   .acts { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; background: var(--paper); border-top: 1px solid var(--line); padding: 12px 16px; padding-bottom: max(12px, env(safe-area-inset-bottom)); gap: 10px; }
   .acts { flex-wrap: wrap; }
-  .acts .b { flex: 1; height: 52px; min-width: 0; overflow: hidden; text-overflow: ellipsis; padding: 0 12px; }  /* 长选项名截断，图下有全名（429） */
+  .acts .b { flex: 1; height: 52px; min-width: 0; overflow: hidden; text-overflow: ellipsis; padding: 0 8px; letter-spacing: .01em; }  /* 四个按钮时 C_34_2 这种短名要放得下（525） */  /* 长选项名截断，图下有全名（429） */
   .acts.noting { width: auto; }
   .acts .note { min-height: 84px; font-size: 16px; }
   .nbtns .nh { display: none; }
@@ -361,6 +361,18 @@ pre code { white-space: pre; }
   .quads { height: auto; display: block; }
   .q { border-right: 0; }
   .q .acts { position: static; border: 0; padding: 0; }
+  /* 带图 / 视频的卡：编号 + 题目 + 选项按钮整块钉在底部，题目就在按钮正上方（525） */
+  .focus.sheet { padding-bottom: calc(var(--sheet, 200px) + 12px); }
+  .focus.sheet > .info { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 2px 10px; padding: 10px 16px 0; background: var(--paper); border-top: 1px solid var(--line); box-shadow: 0 -6px 18px rgba(20, 20, 20, .06); }
+  .focus.sheet > .info .seq { font-size: 30px; line-height: 1; padding-top: 1px; }
+  .focus.sheet > .info .tt .proj { display: none; }
+  .focus.sheet > .info .tt h1, .focus.sheet > .info .tt h1.long { font-size: 16.5px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .focus.sheet > .info .tt p { margin-top: 2px; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .focus.sheet > .info .tt .links { flex-wrap: nowrap; overflow-x: auto; margin-top: 6px; scrollbar-width: none; }
+  .focus.sheet > .info .tt .links a { min-height: 28px; font-size: 13px; flex: none; max-width: 70vw; }
+  .focus.sheet > .info .acts { position: static; grid-column: 1 / -1; border: 0; box-shadow: none; background: none; padding: 8px 0; padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+  .focus.sheet .stage.multi { height: max(34vh, min(62vh, calc(100dvh - var(--sheet, 200px) - 96px))); }
+  .focus.sheet .frame { max-height: max(30vh, min(60vh, calc(100dvh - var(--sheet, 200px) - 120px))); }
   .q .focus { padding-bottom: 18px; }
   .row { grid-template-columns: 40px 64px minmax(0, 1fr); gap: 4px 12px; }
   .row .v, .row .x { grid-column: 3; }
