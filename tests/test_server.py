@@ -120,6 +120,90 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("Blue", r.stdout)
 
+    def cli_as(self, session, *args, stdin=None):
+        env = dict(self.env, DECIDE_SESSION=session)
+        return subprocess.run([sys.executable, CLI, *args], env=env, input=stdin, capture_output=True, text=True, timeout=60)
+
+    def test_hooks_deliver_missed_answers(self):
+        s = "hook-missed"
+        cid = self.cli_as(s, "q", "Which road?", "North", "South", "-p", "smoke").stdout.split()[0]
+        # Nobody is listening: the Stop hook blocks once and asks for a listener.
+        r = self.cli_as(s, "hook", "stop", stdin="{}")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["decision"], "block")
+        self.assertEqual(self.cli_as(s, "hook", "stop", stdin='{"stop_hook_active": true}').stdout, "")
+        card = json.loads(self.req(f"/api/cards/{cid}")[2])
+        self.req(f"/api/cards/{cid}/answer", "POST", {"choice": [card["options"][1]["id"]], "note": "the coast road"})
+        # The answer reaches the session with the next prompt, exactly once.
+        r = self.cli_as(s, "hook", "prompt", stdin="{}")
+        ctx = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("South", ctx)
+        self.assertIn("the coast road", ctx)
+        self.assertEqual(self.cli_as(s, "hook", "prompt", stdin="{}").stdout, "")
+        state = json.loads(self.req("/api/session?session=" + s)[2])
+        self.assertEqual(state["pending"], [])
+        self.assertEqual(state["unacked"], [])
+
+    def test_hook_quiet_while_wait_watches(self):
+        s = "hook-watched"
+        cid = self.cli_as(s, "q", "Keep going?", "Yes", "No", "-p", "smoke").stdout.split()[0]
+        self.cli_as(s, "wait", cid, "--timeout", "1")
+        self.assertEqual(self.cli_as(s, "hook", "stop", stdin="{}").stdout, "")
+        self.assertTrue(json.loads(self.req("/api/session?session=" + s)[2])["pending"][0]["watched"])
+        self.cli_as(s, "cancel", cid)
+
+    def test_hook_silent_without_config(self):
+        env = dict(self.env, DECIDE_KEY="", DECIDE_SESSION="hook-none")
+        r = subprocess.run([sys.executable, CLI, "hook", "stop"], env=env, input="{}", capture_output=True, text=True, timeout=30)
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+
+    def test_listen_timeout_names_pending_cards(self):
+        s = "hook-timeout"
+        cid = self.cli_as(s, "q", "Tea or coffee?", "Tea", "Coffee", "-p", "smoke").stdout.split()[0]
+        seq = json.loads(self.req(f"/api/cards/{cid}")[2])["seq"]
+        r = self.cli_as(s, "listen", "--timeout", "1")
+        self.assertEqual(r.returncode, 124)
+        self.assertIn(f"{seq:02d}", r.stdout)
+        self.assertIn(cid, self.cli_as(s, "ls", "--pending", "-p", "smoke").stdout)
+        self.cli_as(s, "cancel", cid)
+
+    def test_three_choices_need_a_recommendation(self):
+        r = self.cli("q", "Which venue?", "Hall", "Park", "Roof", "-p", "smoke")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("--rec", r.stderr)
+        r = self.cli("q", "Which venue?", "Hall", "Park", "Roof", "-p", "smoke", "--rec", "2")
+        self.assertEqual(r.returncode, 2)  # the recommended option says nothing about why
+        r = self.cli("q", "Which venue?", "Hall::indoors", "Park::shade, near parking", "Roof::wind", "-p", "smoke", "--rec", "2")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        card = json.loads(self.req(f"/api/cards/{r.stdout.split()[0]}")[2])
+        self.assertEqual([o.get("rec", False) for o in card["options"]], [False, True, False])
+        self.assertEqual(self.cli("q", "Which venue?", "Hall", "Park", "Roof", "-p", "smoke", "--no-rec").returncode, 0)
+
+    def test_pick_takes_rec(self):
+        imgs = []
+        for i in range(3):
+            path = os.path.join(self.tmp, f"p{i}.png")
+            write_png(path, 40, 30)
+            imgs.append(path)
+        r = self.cli("pick", "-p", "smoke", "-t", "Cover shot", "--choice", f"A::{imgs[0]}::busy", "--choice",
+                     f"B::{imgs[1]}::cleanest, face in focus", "--choice", f"C::{imgs[2]}::dark", "--rec", "2")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        card = json.loads(self.req(f"/api/cards/{r.stdout.split()[0]}")[2])
+        self.assertEqual([o.get("rec", False) for o in card["options"]], [False, True, False])
+        self.assertEqual([m["label"] for m in card["media"]], ["A", "B", "C"])
+
+    def test_svg_rec_word_turns_red(self):
+        svg = os.path.join(self.tmp, "rec.svg")
+        with open(svg, "w", encoding="utf-8") as f:
+            f.write('<svg viewBox="0 0 300 100"><text y="30" fill="#222">方案 A（推荐）</text>'
+                    '<text y="70" fill="#d33f2a">推荐先修</text></svg>')
+        r = self.cli("q", "Which plan?", "A", "B", "-p", "smoke", "--svg", svg)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        card = json.loads(self.req(f"/api/cards/{r.stdout.split()[0]}")[2])
+        body = self.req(card["media"][0]["src"])[2].decode()
+        self.assertIn('<tspan fill="#d33f2a" font-weight="700">推荐</tspan>', body)
+        self.assertIn('<tspan fill="#e08a00" font-weight="700">推荐</tspan>', body)
+
     def test_svg_upload_and_media_range(self):
         svg = os.path.join(self.tmp, "a.svg")
         with open(svg, "w") as f:

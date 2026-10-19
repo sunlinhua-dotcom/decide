@@ -15,12 +15,14 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import socket
 import subprocess
 import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import webbrowser
 
@@ -61,7 +63,7 @@ decide —— 把要用户拍板的事推到 decide 决策板网页，等用户�
     选项第三段写「@画面」      "A::代价::@一只橘猫坐在窗台上" —— 卡片先上板，后台调你配的出图命令
                              （DECIDE_GEN_CMD，可配多条一起抢）出图，出一张补一张；出不来照样能按文字选
     --gen-style <风格>        换掉默认的「简洁扁平插画、浅色背景、不要文字」风格前缀
-    --rec <N>                标第 N 个为推荐（也可在标签前写「（推荐）」）
+    --rec <N>                标第 N 个为推荐（也可在标签前写「（推荐）」）；3 个以上候选不标推荐会被拒推
     --multi / --no-note / --fact 键=值 / --wait 同下
 
   共用选项
@@ -78,6 +80,8 @@ decide —— 把要用户拍板的事推到 decide 决策板网页，等用户�
     --file <路径>            成片 / 母版路径（显示在信息栏）
     --fact 键=值             其他信息，可重复
     --opt <标签>[::说明]      自定义选项，可重复；「通过 / 返修」等会自动配绿色 / 红色
+    --rec <N>                标第 N 个为推荐（pick 数 --choice）。候选 3 个以上必须标，推荐那个的说明写清为什么；
+                             真分不出高下才加 --no-rec，并在 --sub 写清按什么挑
     --multi                  允许多选
     --no-note                不要备注框
     --note-hint <文字>        备注框提示语
@@ -92,6 +96,7 @@ decide —— 把要用户拍板的事推到 decide 决策板网页，等用户�
   decide listen [--timeout 秒] [--grace 秒]
     后台挂着；本会话推的卡片里，用户一点（通过 / 返修 / 选图）就返回并打印答案，然后要重新挂。
     监听没开时点的答案不会丢，下次 listen 一启动就返回。同一会话只跑一个，重复启动会直接退出。
+    默认挂 12 小时；到期或被杀时会打印本会话还有几张待定、要不要重挂。
     会话按环境变量 CLAUDE_CODE_SESSION_ID 区分（可用 DECIDE_SESSION 覆盖）。
   decide wait <id> … [--any] [--timeout 秒] [--grace 秒] [--json]
     只等指定卡片（派出去的执行方用）。默认等到全部定完；--any 有一张定了就返回。
@@ -102,7 +107,8 @@ decide —— 把要用户拍板的事推到 decide 决策板网页，等用户�
     用户在对话里直接提意见时用：不带编号 = 本会话所有待定卡；带编号 = 只清这几张。网页上随即消失，记成「在对话里说」。
 
 查看与管理
-  decide ls [-p 项目] [-s pending|answered|cancelled|all] [-n 条数]
+  decide ls [-p 项目] [-s pending|answered|cancelled|all] [--pending] [-n 条数]
+                                   转述别的会话的卡之前先 ls --pending 看实时状态，已定的别再说「在等你定」
   decide show <id>                 整张卡片 JSON
   decide cancel <id> …             撤销还没定的卡片
   decide link <编号|id> [名称::网址 …]   已上板的卡补可点链接（不给就从卡上的 SVG 里认网址；--clear 清掉）
@@ -111,6 +117,8 @@ decide —— 把要用户拍板的事推到 decide 决策板网页，等用户�
   decide open [项目 …]             浏览器打开（自动登录）；给多个项目就开四宫格
   decide key --copy                把密钥复制到剪贴板（手机粘贴登录用）
   decide doctor                    检查配置、服务、上传通道
+  decide hook prompt|stop          Claude Code 钩子（UserPromptSubmit / Stop）：补送已答未送的答案，
+                                   待定卡没人在听时提醒挂 listen；连不上服务一律静默放行
 
 配置（环境变量优先于 ~/.config/decide/config.json，见 config.example.json）
   DECIDE_BASE    决策板地址，默认 http://127.0.0.1:8796
@@ -120,6 +128,7 @@ decide —— 把要用户拍板的事推到 decide 决策板网页，等用户�
   DECIDE_GEN_CMD 「@画面」出图命令模板，见 README
 
 写卡片的规矩
+  SVG 里写的「推荐」上传时自动标红加粗（所在文字本身是红色就改琥珀色）；
   标题 = 镜号或主题 + 一句话；审片卡信息栏写清画面里有什么、上次崩在哪、这次怎么改；
   前后两版用 --before / --after；候选用 pick 的 A/B/C/D；一张卡只问一件事。
 """
@@ -234,9 +243,69 @@ def svg_prep(src, dst):
         raise RuntimeError(f"SVG 缺 viewBox 或宽高：{src}")
     if not vb:
         t = t.replace(head, head[:-1] + f' viewBox="0 0 {w:g} {h:g}">', 1)
+    t = svg_mark_rec(t)
     with open(dst, "w", encoding="utf-8") as f:
         f.write(t)
     return round(w), round(h)
+
+
+REC_RED, REC_AMBER, REC_AMBER_LIGHT = "#d33f2a", "#e08a00", "#ffb020"
+_NAMED = {"red": (255, 0, 0), "crimson": (220, 20, 60), "firebrick": (178, 34, 34), "tomato": (255, 99, 71),
+          "white": (255, 255, 255), "black": (0, 0, 0)}
+
+
+def _rgb(v):
+    v = (v or "").strip().lower()
+    if v in _NAMED:
+        return _NAMED[v]
+    m = re.fullmatch(r"#([0-9a-f]{3}|[0-9a-f]{6})", v)
+    if m:
+        x = m.group(1)
+        x = "".join(ch * 2 for ch in x) if len(x) == 3 else x
+        return tuple(int(x[i:i + 2], 16) for i in (0, 2, 4))
+    m = re.fullmatch(r"rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+).*\)", v)
+    return tuple(int(m.group(i)) for i in (1, 2, 3)) if m else None
+
+
+def _fill_of(tag):
+    m = re.search(r"""\sfill\s*=\s*["']([^"']+)["']""", tag) or re.search(r"""fill\s*:\s*([^;"']+)""", tag)
+    return m.group(1).strip() if m else None
+
+
+def svg_mark_rec(t):
+    """SVG 文字里的「推荐」标红加粗。所在文字本身是红色就用琥珀色，浅色字（压在色块上）用亮琥珀。
+    已经单独上过色的「推荐」（一个 tspan 里只有这两个字）不动。"""
+    if "推荐" not in t:
+        return t
+    out, stack = [], []  # stack：从 <text> 起每层的 fill
+    for part in re.split(r"(<[^>]*>)", t):
+        if part.startswith("<"):
+            name = re.match(r"</?\s*([A-Za-z:]+)", part)
+            name = name.group(1).split(":")[-1] if name else ""
+            if name in ("text", "tspan", "textPath", "a"):
+                if part.startswith("</"):
+                    if stack:
+                        stack.pop()
+                elif not part.endswith("/>") and (stack or name == "text"):
+                    stack.append(_fill_of(part))
+            out.append(part)
+            continue
+        if not stack or "推荐" not in part:
+            out.append(part)
+            continue
+        fill = next((f for f in reversed(stack) if f), None)
+        rgb = _rgb(fill)
+        if part.strip() == "推荐" and rgb and rgb[0] > 150 and rgb[1] < 110 and rgb[2] < 110:
+            out.append(part)
+            continue
+        if rgb and sum(rgb) > 600:
+            color = REC_AMBER_LIGHT
+        elif rgb and rgb[0] > 150 and rgb[1] < 110 and rgb[2] < 110:
+            color = REC_AMBER
+        else:
+            color = REC_RED
+        out.append(part.replace("推荐", f'<tspan fill="{color}" font-weight="700">推荐</tspan>'))
+    return "".join(out)
 
 
 # 完成卡里写到的网址：板上排成可点的链接（图里写的网址本身点不了）
@@ -697,8 +766,8 @@ def build_spec(a, kind):
                 die(f"--choice 格式是 \"标签::文件::说明\"：{ch}")
             label, path, desc = parts[0].strip(), os.path.expanduser(parts[1]), "::".join(parts[2:])
             idx = len(media_in)
-            media_in.append({"path": path, "label": label, "caption": desc})
             o = opt_from(label, i)
+            media_in.append({"path": path, "label": o["label"], "caption": desc})
             if any(x["id"] == o["id"] for x in spec["options"]):
                 o["id"] = f"c{i + 1}"
             o["media"] = idx
@@ -726,11 +795,38 @@ def build_spec(a, kind):
     return spec, media_in
 
 
+def rec_guard(spec, media_in, no_rec):
+    """候选 3 个以上必须标推荐，推荐的那个要写为什么（10-20：749 八张首帧没推荐、说明只写「组 a 第 1 张」，用户没法选）。"""
+    opts = spec.get("options") or []
+    real = [o for o in opts if not o.get("style")]  # 通过 / 返修 / 要改 这类不算候选
+    if len(real) < 3 or no_rec:
+        return
+    recs = [o for o in opts if o.get("rec")]
+    if not recs:
+        die(f"{len(real)} 个候选都没标推荐，用户在板上没法选。加 --rec <第几个>（或在标签前写「（推荐）」），"
+            "推荐那个的说明写清为什么、和别的差在哪；真分不出高下才加 --no-rec，并在 --sub 写清按什么标准挑")
+    for o in recs:
+        m = o.get("media")
+        why = o.get("desc") or (media_in[m].get("caption") if isinstance(m, int) and m < len(media_in) else "")
+        if not (why or "").strip():
+            die(f"推荐的「{o['label']}」没写为什么：说明里写一句它好在哪、和别的差在哪（pick 写在 --choice 第三段）")
+
+
 def cmd_push(a, kind):
     c = conf()
     if not a.spec and not a.title:
         die("缺 -t 标题（镜号或主题 + 一句话）")
+    if a.cmd in ("ask", "pick") and a.rec:
+        n = len(a.choice or []) if kind == "choose" else len(a.opt or [])
+        for k in a.rec:
+            if not 1 <= k <= n:
+                die(f"--rec {k} 超出选项个数（{n} 个）")
+            if kind == "choose":
+                a.choice[k - 1] = "（推荐）" + a.choice[k - 1]
+            else:
+                a.opt[k - 1] = "（推荐）" + a.opt[k - 1]
     spec, media_in = build_spec(a, kind)
+    rec_guard(spec, media_in, getattr(a, "no_rec", False))
     project = a.project or spec.get("project")
     if not project or not re.match(r"^[a-z0-9][a-z0-9-]{0,39}$", project):
         die("缺 -p 项目，或项目代号不合法（小写字母数字和连字符）")
@@ -869,7 +965,7 @@ def wait_ids(c, ids, any_mode, timeout, grace, as_json):
     ver, graced, fails = 0, False, 0
     while True:
         try:
-            j = http(c, "GET", "/api/cards?limit=500&ids=" + ",".join(ids), timeout=30)
+            j = http(c, "GET", "/api/cards?limit=500&watch=1&ids=" + ",".join(ids), timeout=30)
             fails = 0
         except (ApiError, OSError) as e:
             fails += 1
@@ -941,6 +1037,13 @@ def cmd_listen(a):
         pass
     with open(lock, "w") as f:
         f.write(str(os.getpid()))
+
+    def killed(sig, _frame):  # 被外层 timeout / 后台任务管理杀掉时，别一声不吭地退出
+        print(pending_note(c, "监听被终止"))
+        sys.stdout.flush()
+        raise SystemExit(128 + sig)
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, killed)
     try:
         deadline = time.time() + a.timeout
         fails = 0
@@ -976,6 +1079,7 @@ def cmd_listen(a):
             http(c, "POST", "/api/ack", {"ids": [x["id"] for x in got]}, timeout=20)
             print("（处理完记得重新挂 decide listen）")
             return 0
+        print(pending_note(c, f"监听到期（{a.timeout // 3600} 小时）" if a.timeout >= 3600 else "监听到期"))
         return 124
     finally:
         try:
@@ -983,6 +1087,99 @@ def cmd_listen(a):
                 os.remove(lock)
         except OSError:
             pass
+
+
+def session_state(c, sess, timeout):
+    return http(c, "GET", "/api/session?session=" + urllib.parse.quote(sess), timeout=timeout)
+
+
+def pending_note(c, why):
+    """监听结束时打印：本会话还有哪些待定卡、要不要重挂。"""
+    try:
+        p = session_state(c, SESSION, 10)["pending"]
+    except (ApiError, OSError, ValueError, KeyError):
+        return f"decide：{why}。连不上服务查不到待定卡；如果还有卡在等用户，请用 run_in_background 重挂 decide listen。"
+    if not p:
+        return f"decide：{why}，本会话没有待定卡，不用重挂。"
+    seqs = "、".join(f"{x['seq']:02d}" for x in p)
+    return f"decide：{why}，本会话还有 {len(p)} 张待定（编号 {seqs}），请用 run_in_background 重挂 decide listen。"
+
+
+def answers_text(cards, why):
+    lines = [f"用户在 decide 上已经定了 {len(cards)} 张（{why}）："] + ["  " + fmt_card(x) for x in cards]
+    chat = [x for x in cards if "chat" in ((x.get("answer") or {}).get("choice") or [])]
+    if chat:
+        lines.append("其中 " + "、".join(f"{x['seq']:02d}" for x in chat) + " 用户选了「在对话里说」：别再追问这几张，等他在对话里给意见。")
+    lines.append("按这些答案接着做，不要再说「在等用户在 decide 上定」。")
+    return "\n".join(lines)
+
+
+def hook_conf():
+    """钩子用：没配置就返回 None。钩子绝不能因为 decide 的问题拦住会话。"""
+    try:
+        with open(CONF_PATH) as f:
+            c = json.load(f)
+    except (OSError, ValueError):
+        c = {}
+    c["base"] = os.environ.get("DECIDE_BASE", c.get("base") or "http://127.0.0.1:8796").rstrip("/")
+    c["key"] = os.environ.get("DECIDE_KEY", c.get("key", ""))
+    return c if c["key"] else None
+
+
+def local_listening(sess):
+    try:
+        os.kill(int(open(os.path.join(LOCK_DIR, f"listen-{sess}.pid")).read().strip()), 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def cmd_hook(a):
+    """Claude Code 钩子（10-19）。会话常说「在等你在 decide 上定」，其实用户早答了：监听死了或没重挂。
+    prompt：用户发消息时，把已答但没送到本会话的答案塞进上下文。
+    stop：本轮要结束时，有答案没送到就拦下补送；有待定卡却没有 listen / wait 在听，就拦下提醒挂监听。
+    任何错误一律静默放行（退出 0、不输出）。"""
+    try:
+        data = json.load(sys.stdin)
+    except ValueError:
+        return 0
+    if a.event == "stop" and data.get("stop_hook_active"):
+        return 0
+    sess = os.environ.get("DECIDE_SESSION") or data.get("session_id") or ""
+    c = hook_conf()
+    if not sess or not c:
+        return 0
+    try:
+        st = session_state(c, sess, 3)
+        if a.event == "stop" and not st["listening"] and any(not x["watched"] for x in st["pending"]):
+            time.sleep(1.5)  # 刚在后台挂的 listen 可能还没连上，再看一眼
+            st = session_state(c, sess, 3)
+    except Exception:  # noqa: BLE001
+        return 0
+    listening = st["listening"] or local_listening(sess)
+    # 监听在跑、答案刚出来（30 秒内）的，交给监听送，免得送两遍
+    give = [x for x in st["unacked"]
+            if not (listening and st["now"] - ((x.get("answer") or {}).get("at") or x["updated"]) < 30)]
+    if give:
+        try:
+            http(c, "POST", "/api/ack", {"ids": [x["id"] for x in give]}, timeout=3)
+        except Exception:  # noqa: BLE001
+            pass
+    if a.event == "prompt":
+        if give:
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
+                                                     "additionalContext": answers_text(give, "监听没送到，钩子补送")}},
+                             ensure_ascii=False))
+        return 0
+    msgs = [answers_text(give, "监听没送到，钩子补送")] if give else []
+    lone = [] if listening else [x for x in st["pending"] if not x["watched"]]
+    if lone:
+        seqs = "、".join(f"{x['seq']:02d}" for x in lone)
+        msgs.append(f"本会话还有 {len(lone)} 张 decide 待定卡（编号 {seqs}）没有 listen / wait 在听，用户点了也送不回来。"
+                    "用 run_in_background 挂 `decide listen` 后再结束本轮；不再需要的卡用 `decide cancel <id>` 撤掉。")
+    if msgs:
+        print(json.dumps({"decision": "block", "reason": "\n\n".join(msgs)}, ensure_ascii=False))
+    return 0
 
 
 SYN = {"过": "ok", "通过": "ok", "可以": "ok", "ok": "ok", "OK": "ok", "行": "ok",
@@ -1046,7 +1243,7 @@ def cmd_chat(a):
 # ---------------- 其他命令 ----------------
 def cmd_ls(a):
     c = conf()
-    q = f"/api/cards?limit={a.n}&status={a.s}" + (f"&project={a.project}" if a.project else "")
+    q = f"/api/cards?limit={a.n}&status={'pending' if a.pending else a.s}" + (f"&project={a.project}" if a.project else "")
     for x in http(c, "GET", q)["cards"]:
         print(f"[{x['project']}] " + fmt_card(x))
     return 0
@@ -1271,6 +1468,8 @@ def main():
         p.add_argument("--spec")
         p.add_argument("--wait", action="store_true")
         p.add_argument("--timeout", type=int, default=3600)
+        p.add_argument("--rec", type=int, action="append", help="推荐第几个（从 1 数；pick 数 --choice）")
+        p.add_argument("--no-rec", action="store_true", help="真分不出高下时才用，--sub 写清按什么挑")
     p = sub.add_parser("q")
     p.add_argument("question")
     p.add_argument("opts", nargs="*")
@@ -1284,6 +1483,7 @@ def main():
     p.add_argument("--gen-style", help="配图统一风格（替换默认的扁平插画风格前缀）")
     p.add_argument("--raw-svg", action="store_true", help="字多的方案图也照原样贴图，不拆成网页文字")
     p.add_argument("--rec", type=int, action="append", help="推荐第几个（从 1 数）")
+    p.add_argument("--no-rec", action="store_true", help="真分不出高下时才用，--sub 写清按什么挑")
     p.add_argument("--fact", action="append")
     p.add_argument("--multi", action="store_true")
     p.add_argument("--no-note", action="store_true")
@@ -1300,7 +1500,7 @@ def main():
     p.add_argument("--grace", type=int, default=8)
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("listen")
-    p.add_argument("--timeout", type=int, default=6 * 3600)
+    p.add_argument("--timeout", type=int, default=12 * 3600)
     p.add_argument("--grace", type=int, default=8)
     p = sub.add_parser("resolve")
     p.add_argument("ref")
@@ -1311,6 +1511,7 @@ def main():
     p = sub.add_parser("ls")
     p.add_argument("-p", "--project")
     p.add_argument("-s", default="all", choices=["pending", "answered", "cancelled", "all"])
+    p.add_argument("--pending", action="store_true", help="只看待定（= -s pending）")
     p.add_argument("-n", type=int, default=20)
     p = sub.add_parser("show")
     p.add_argument("ids", nargs="+")
@@ -1333,6 +1534,8 @@ def main():
     p.add_argument("--copy", action="store_true")
     p.add_argument("--print", action="store_true")
     sub.add_parser("doctor")
+    p = sub.add_parser("hook")
+    p.add_argument("event", choices=["prompt", "stop"])
     a = ap.parse_args()
     if a.cmd in ("ask", "pick"):
         if a.cmd == "ask" and a.choice:
@@ -1342,7 +1545,7 @@ def main():
     if a.cmd == "q":
         return cmd_q(a)
     return {"wait": cmd_wait, "listen": cmd_listen, "resolve": cmd_resolve, "chat": cmd_chat, "ls": cmd_ls, "show": cmd_show, "replan": cmd_replan, "link": cmd_link, "cancel": cmd_cancel, "project": cmd_project,
-            "open": cmd_open, "key": cmd_key, "doctor": cmd_doctor}[a.cmd](a)
+            "open": cmd_open, "key": cmd_key, "doctor": cmd_doctor, "hook": cmd_hook}[a.cmd](a)
 
 
 if __name__ == "__main__":

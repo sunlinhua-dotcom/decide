@@ -114,8 +114,23 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .qstage.pics:not(.side) .tile-pic, .qstage.pics:not(.side) .tile-pic.fit img { max-height: var(--picmax, 26vh); }
 .tile-d { font-size: 14px; line-height: 1.65; color: var(--ink-2); text-wrap: pretty; }
 .tile-tag { position: absolute; top: 18px; right: 18px; font-size: 12px; line-height: 1.5; color: var(--red); border: 1px solid currentColor; border-radius: 999px; padding: 0 9px; }
-.tile.rec { border-color: var(--ink); }
-.cap .rec { font-size: 11px; line-height: 1.5; color: var(--red); border: 1px solid currentColor; border-radius: 999px; padding: 0 7px; white-space: nowrap; }
+.tile.rec { border-color: var(--red); box-shadow: inset 0 0 0 1px var(--red); }  /* 推荐的一圈红框（749 用户要求） */
+.cap .rec { font-size: 11px; line-height: 1.5; color: var(--red); border: 1px solid currentColor; border-radius: 999px; padding: 0 7px; font-weight: 600; white-space: nowrap; }
+/* 「推荐」两个字一律醒目（10-19 用户定）：浅底红字加粗；深底（选中卡、黑按钮）换琥珀色；本来就是红字的地方改红底白字 */
+.kw-rec { color: var(--red); font-weight: 600; }
+.tile.sel .kw-rec, .tile.sel .tile-tag, .b.go .kw-rec, .b.sel .kw-rec { color: #ffb020; }
+.tile.no .tile-t .kw-rec, .b.no .kw-rec, .rv .kw-rec { color: #fff; background: var(--red); border-radius: 4px; padding: 0 3px; }
+.tile-tag { font-weight: 600; }
+.plan-s.rc h3 .kw-rec { color: #e08a00; }
+/* 格子窄（743：八张竖图三四列）：说明行固定高，第一行字母 + 要改，第二行说明最多两行，每张图一样大 */
+.stage.multi .fig { container-type: inline-size; }
+@container (max-width: 260px) {
+  .cap.txt { flex-wrap: wrap; align-content: flex-start; row-gap: 2px; height: 70px; min-height: 70px; overflow: hidden; }
+  .cap.txt .ct { order: 3; flex-basis: 100%; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.4; }
+  .cap.txt .cap-rv { margin-left: auto; }
+  .fig.rec .cap .rec { display: none; }  /* 窄格里红框 + 底部按钮已标推荐，小标签会把「要改」挤下去 */
+  .cap.txt .lt.long { flex-basis: auto; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
 .tile.no .tile-t { color: var(--red); }
 .tile.no:hover { border-color: var(--red); }
 .tile.sel { background: var(--ink); border-color: var(--ink); }
@@ -139,6 +154,11 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .fig.pick .frame { cursor: pointer; }
 .fig.pick .frame::after { content: ""; position: absolute; inset: 0; border: 1px solid transparent; transition: border-color .15s; pointer-events: none; }
 .fig.pick:hover .frame::after { border-color: var(--ink); }
+.fig.rec .frame::after, .fig.rec:hover .frame::after { border: 3px solid var(--red); }
+.lb-cell.rec img, .lb-cell.rec video { box-shadow: 0 0 0 3px var(--red), 0 14px 40px rgba(20, 20, 20, .12); }
+.b.rec { border: 2px solid var(--red); display: inline-flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; line-height: 1; }
+.b .rtag { font-family: var(--zh); font-size: 10px; line-height: 1; font-weight: 700; letter-spacing: 0; color: var(--red); }
+.b.sel .rtag, .b.go .rtag { color: #ffb020; }
 .cap { min-height: 30px; padding-top: 8px; display: flex; align-items: baseline; gap: 8px; font-size: 12px; color: var(--ink-3); }
 .cap .lt { font-family: var(--num); font-size: 22px; line-height: 1; color: var(--ink); }
 /* 选项名是一整句：单独一行，推荐 / 说明 / 要改… 排第二行 */

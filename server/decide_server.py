@@ -88,7 +88,8 @@ CREATE INDEX IF NOT EXISTS cards_project ON cards(project);
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT NOT NULL);
 """)
 cols = {r["name"] for r in db.execute("PRAGMA table_info(cards)")}
-for col, ddl in (("seq", "INTEGER"), ("session", "TEXT NOT NULL DEFAULT ''"), ("acked", "INTEGER NOT NULL DEFAULT 0")):
+for col, ddl in (("seq", "INTEGER"), ("session", "TEXT NOT NULL DEFAULT ''"), ("acked", "INTEGER NOT NULL DEFAULT 0"),
+                 ("acked_at", "REAL")):
     if col not in cols:
         db.execute(f"ALTER TABLE cards ADD COLUMN {col} {ddl}")
 if db.execute("SELECT 1 FROM cards WHERE seq IS NULL LIMIT 1").fetchone():
@@ -101,6 +102,8 @@ db.commit()
 row = db.execute("SELECT v FROM meta WHERE k='ver'").fetchone()
 VER = [int(row["v"]) if row else 0]
 LISTENERS = {}  # session -> 最近一次 /api/listen 的时间
+WAITERS = {}  # 卡片 id -> 最近一次 decide wait 来查它的时间
+LIVE = 120  # 这么多秒内来过算「有人在听」（listen / wait 最长 55 秒一轮）
 
 
 class Bad(Exception):
@@ -457,6 +460,8 @@ class H(BaseHTTPRequestHandler):
             return self.to_chat()
         if m == "POST" and p == ["ack"]:
             return self.ack()
+        if m == "GET" and p == ["session"]:
+            return self.session_state()
         if p == ["cards"]:
             return self.list_cards() if m == "GET" else self.create_card()
         if len(p) >= 2 and p[0] == "cards" and ID_RE.match(p[1]):
@@ -621,9 +626,34 @@ class H(BaseHTTPRequestHandler):
         ids = [i for i in (raw.get("ids") or []) if isinstance(i, str) and ID_RE.match(i)][:200]
         if ids:
             with lock:
-                db.execute("UPDATE cards SET acked=1 WHERE status!='pending' AND id IN (%s)" % ",".join("?" * len(ids)), ids)
+                db.execute("UPDATE cards SET acked=1, acked_at=? WHERE status!='pending' AND acked=0 AND id IN (%s)" % ",".join("?" * len(ids)),
+                           [time.time()] + ids)
                 bump()
         self.send(200, {"ok": True, "n": len(ids)})
+
+    def session_state(self):
+        """钩子用（10-19）：本会话还有哪些待定卡、哪些答了还没送到会话、有没有监听在跑。
+        会话说「在等你定」时其实已经答了，多半是监听死了或刚答完；钩子据此补送、提醒重挂。"""
+        sess = self.q().get("session") or ""
+        if not sess:
+            raise Bad(400, "缺 session")
+        now = time.time()
+        with lock:
+            sweep_expired()
+            rows = db.execute("SELECT * FROM cards WHERE session=? AND (status='pending' OR (status='answered' AND acked=0))"
+                              " ORDER BY seq", (sess,)).fetchall()
+            listening = now - LISTENERS.get(sess, 0) < LIVE
+            out = {"now": now, "listening": listening, "pending": [], "unacked": []}
+            for r in rows:
+                c = card_json(r)
+                if c.get("kind") == "perm":  # 授权卡由权限钩子自己收，不归会话
+                    continue
+                if r["status"] == "pending":
+                    out["pending"].append({"id": c["id"], "seq": c["seq"], "title": c.get("title", ""), "project": c["project"],
+                                           "created": c["created"], "watched": listening or now - WAITERS.get(c["id"], 0) < LIVE})
+                else:
+                    out["unacked"].append(c)
+            self.send(200, out)
 
     def list_cards(self):
         q = self.q()
@@ -632,6 +662,10 @@ class H(BaseHTTPRequestHandler):
             ids = [i for i in q["ids"].split(",") if ID_RE.match(i)][:200]
             sql += " AND id IN (%s)" % ",".join("?" * len(ids))
             args += ids
+            if q.get("watch"):  # decide wait 在等这几张：会话停下时钩子据此判断「有人在听」
+                now = time.time()
+                for i in ids:
+                    WAITERS[i] = now
         if q.get("project"):
             sql += " AND project=?"
             args.append(q["project"])

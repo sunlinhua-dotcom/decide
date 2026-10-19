@@ -95,6 +95,17 @@ Two hooks in `hooks/` turn Claude Code's own prompts into cards. Register them i
 
 Cards land in the project `claude-allow`. If the board cannot be reached, nobody answers in time, or anything fails, the hooks print nothing and Claude falls back to its own dialog, so nothing is ever allowed by default. The hooks read the board address and key from `~/.config/decide/config.json` (or `DECIDE_BASE` / `DECIDE_KEY`); `~/.config/decide/hooks.json` can set `{"enabled": true, "waitSec": 1800, "decideOffers": true}`.
 
+**Answers that never reached the session.** If `decide listen` dies or is never re-hung, an answer can sit on the board while the session keeps saying it is waiting. Two more hooks close that gap:
+
+```json
+"UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "/abs/path/decide/bin/decide hook prompt", "timeout": 10 }] }],
+"Stop": [{ "hooks": [{ "type": "command", "command": "/abs/path/decide/bin/decide hook stop", "timeout": 10 }] }]
+```
+
+- `hook prompt` adds any answered-but-undelivered cards to the context of the user's next message.
+- `hook stop` blocks the end of a turn once if there are such answers, or if the session has pending cards that no `listen` / `wait` is watching.
+- Both print nothing on any error.
+
 ## Configuration
 
 **Server** (environment variables; see [`.env.example`](.env.example)):
@@ -238,6 +249,12 @@ bin/decide ask -p demo -t "T12 杯子特写 · 手柄朝右" --before old.jpg --
 - `decide-offer-hook.mjs`：Claude Desktop 的「新会话 / 在这里做」。
 
 卡片进 `claude-allow` 项目。决策板连不上、到点没人答、或者出任何错，钩子都什么也不输出，Claude 退回自己的对话框，绝不会默认放行。钩子从 `~/.config/decide/config.json`（或 `DECIDE_BASE` / `DECIDE_KEY`）读地址和密钥；`~/.config/decide/hooks.json` 可写 `{"enabled": true, "waitSec": 1800, "decideOffers": true}`。
+
+**答案没送到会话**：`decide listen` 死了或没重挂时，用户已经在板上答了，会话还在说「在等你定」。再加两个钩子补上（JSON 同上方英文部分）：
+
+- `hook prompt`：用户发下一条消息时，把已答但没送到的卡塞进上下文。
+- `hook stop`：本轮结束时，有这种答案，或本会话有待定卡却没有 `listen` / `wait` 在听，就拦一次。
+- 出任何错都什么也不输出。
 
 ## 配置说明
 
