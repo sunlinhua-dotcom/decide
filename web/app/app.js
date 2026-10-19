@@ -74,6 +74,7 @@ async function loadState() {
   const j = await api('/api/state');
   S.ver = j.ver; S.skew = Date.now() / 1000 - j.now;
   S.projects = j.projects; S.cards = j.cards; S.byId = new Map(j.cards.map(c => [c.id, c]));
+  S.intake = !!j.intake; $('#ph-link').hidden = !S.intake;
   const fresh = S.seen ? j.cards.filter(c => c.status === 'pending' && !S.seen.has(c.id)) : [];
   S.seen = new Set(j.cards.filter(c => c.status === 'pending').map(c => c.id));
   if (fresh.length) startFlash();
@@ -117,7 +118,7 @@ async function checkBuild() {
     const html = await (await fetch('/', { cache: 'no-store', credentials: 'same-origin' })).text();
     const v = (html.match(/app\.js\?v=(\d+)/) || [])[1];
     if (!v || v === BUILD) return;
-    if (S.note || $('#lb').classList.contains('on')) { staleSince = staleSince || Date.now(); return; }
+    if (S.note || phDirty() || $('#lb').classList.contains('on')) { staleSince = staleSince || Date.now(); return; }
     location.reload();
   } catch {}
 }
@@ -130,6 +131,7 @@ function parseRoute() {
   const q = new URLSearchParams(location.search);
   if (p === '/grid') return { type: 'grid', slugs: (q.get('p') || '').split(',').filter(Boolean).slice(0, 4) };
   if (p === '/done') return { type: 'done' };
+  if (p === '/paihuo') return { type: 'paihuo' };
   const m = p.match(/^\/p\/([a-z0-9-]+)$/);
   return { type: 'focus', slug: m ? m[1] : null };
 }
@@ -159,6 +161,7 @@ function render() {
     renderFocus(main, main._ctx, {});
   }
   else if (r.type === 'grid') renderGrid(main, r.slugs);
+  else if (r.type === 'paihuo') return renderPaihuo(main);
   else renderDone(main);
   const n = r.type === 'focus' ? queue(r.slug).length : r.type === 'grid' ? r.slugs.reduce((s, x) => s + queue(x).length, 0) : queue(null).length;
   baseTitle = (n ? `(${n}) ` : '') + (r.type === 'focus' && r.slug ? pname(r.slug) + ' · ' : '') + 'decide';
@@ -771,6 +774,164 @@ function renderDone(main) {
     h('h2', { class: 'h' }, '已定'),
     rows.length ? rows : h('p', { style: 'color:var(--ink-3)' }, '还没有定过的卡片。'),
     projs.length ? h('div', { class: 'projs' }, h('h3', null, '项目（做完的归档，就不再出现在顶部）'), projs) : null));
+}
+
+/* ---------- 派活：文字 + 附件交给分拣台（10-20） ---------- */
+const PH = { key: '', text: '', chat: '', note: '', files: [], recent: [], info: null, busy: false, active: 0, seq: 0 };
+const PH_LABEL = { sending: '交件中…', submitted: '网关已收，排队中', queued: '已交分拣台', failed: '没交出去' };
+function phKey() { const a = new Uint8Array(8); crypto.getRandomValues(a); return [...a].map(x => x.toString(16).padStart(2, '0')).join(''); }
+function phDirty() { return !!(PH.text.trim() || PH.chat.trim() || PH.note.trim() || PH.files.length || PH.busy); }
+function fmtSize(n) { return n < 1 << 20 ? Math.max(1, Math.round(n / 1024)) + ' KB' : (n / (1 << 20)).toFixed(n < 10 << 20 ? 1 : 0) + ' MB'; }
+async function phLoad() {
+  try { const j = await api('/api/intake'); PH.info = j; PH.recent = j.recent || []; } catch (e) { PH.loadErr = e.message; }
+  phPaint();
+}
+function phAdd(list) {
+  const max = PH.info?.max_bytes || 95 << 20, cap = PH.info?.max_files || 30;
+  for (const f of list) {
+    if (PH.files.length >= cap) { toast(`一次最多 ${cap} 个附件`); break; }
+    const it = { lid: ++PH.seq, file: f, name: f.name || ('粘贴的图片-' + PH.seq + '.png'), size: f.size, pct: 0, fid: '', err: '' };
+    if (f.size > max) it.err = `超过 ${fmtSize(max)}`;
+    if (/^image\//.test(f.type)) it.thumb = URL.createObjectURL(f);
+    PH.files.push(it);
+  }
+  phPump(); phPaint();
+}
+function phPump() {
+  for (const it of PH.files) {
+    if (PH.active >= 3) break;
+    if (it.fid || it.err || it.xhr) continue;
+    PH.active++;
+    const x = it.xhr = new XMLHttpRequest();
+    x.open('POST', '/api/intake/file');
+    x.setRequestHeader('X-Filename', encodeURIComponent(it.name));
+    x.setRequestHeader('Content-Type', 'application/octet-stream');
+    x.upload.onprogress = e => { if (e.lengthComputable) { it.pct = e.loaded / e.total; phChip(it); } };
+    x.onloadend = () => {
+      PH.active--; it.xhr = null;
+      if (!PH.files.includes(it)) return phPump();
+      if (x.status === 401) return location.reload();
+      let j = {}; try { j = JSON.parse(x.responseText || '{}'); } catch {}
+      if (x.status === 201 && j.id) { it.fid = j.id; it.pct = 1; }
+      else it.err = j.error || (x.status ? '上传失败（' + x.status + '）' : '网络断了');
+      phPump(); phPaint();
+    };
+    x.send(it.file);
+  }
+}
+function phRemove(it) {
+  if (it.xhr) it.xhr.abort();
+  if (it.thumb) URL.revokeObjectURL(it.thumb);
+  PH.files = PH.files.filter(x => x !== it); phPaint();
+}
+function phChip(it) {
+  const el = PH.el && PH.el.querySelector(`[data-lid="${it.lid}"]`);
+  if (!el) return;
+  const st = it.err ? it.err : it.fid ? fmtSize(it.size) : Math.round(it.pct * 100) + '%';
+  el.className = 'ph-chip' + (it.err ? ' bad' : it.fid ? ' ok' : ' up');
+  el.querySelector('.st').textContent = st;
+  el.querySelector('.bar i').style.width = (it.fid ? 100 : Math.round(it.pct * 100)) + '%';
+}
+async function phSubmit() {
+  if (PH.busy) return;
+  if (PH.files.some(x => !x.fid && !x.err)) return toast('附件还在上传，传完再交');
+  if (PH.files.some(x => x.err)) return toast('有附件没传上去，先删掉或重试');
+  if (!PH.text.trim() && !PH.files.length) return toast('写几句话或加个附件');
+  PH.busy = true; phPaint();
+  try {
+    const row = await api('/api/intake', { method: 'POST', body: { key: PH.key, text: PH.text, chat: PH.chat, note: PH.note, files: PH.files.map(x => x.fid) } });
+    PH.files.forEach(x => x.thumb && URL.revokeObjectURL(x.thumb));
+    Object.assign(PH, { key: phKey(), text: '', chat: '', note: '', files: [] });
+    PH.recent = [row, ...PH.recent.filter(r => r.id !== row.id)];
+    PH.el = null;  // 重画编辑区，清掉输入框
+    toast('交出去了，分拣台判断好会在这块板上请你确认');
+  } catch (e) { toast(e.message); }
+  PH.busy = false; phPaint();
+}
+async function phRetry(id) {
+  try { const row = await api('/api/intake/' + id + '/retry', { method: 'POST', body: {} }); PH.recent = PH.recent.map(r => r.id === id ? row : r); phPaint(); }
+  catch (e) { toast(e.message); }
+}
+setInterval(() => { if (S.route?.type === 'paihuo' && !document.hidden && PH.recent.some(r => r.status === 'sending' || r.status === 'submitted')) phLoad(); }, 4000);
+document.addEventListener('paste', e => {
+  if (S.route?.type !== 'paihuo') return;
+  const fs = [...(e.clipboardData?.files || [])];
+  if (!fs.length) return;
+  e.preventDefault(); phAdd(fs);
+});
+function renderPaihuo(main) {
+  document.title = baseTitle = '派活 · decide';
+  if (!PH.key) PH.key = phKey();
+  if (!PH.info && !PH.loading) { PH.loading = true; phLoad(); }
+  if (main._ph && PH.el && main.contains(PH.el)) return phPaint();
+  main._ph = true; PH.el = null; phPaint();
+}
+function phPaint() {
+  const main = $('#main');
+  if (S.route?.type !== 'paihuo' || !main._ph) return;
+  if (!PH.el || !main.contains(PH.el)) {
+    const pick = h('input', { type: 'file', multiple: true, class: 'ph-file', onchange: e => { phAdd([...e.target.files]); e.target.value = ''; } });
+    const field = (k, tag, attrs) => h(tag, { ...attrs, oninput: e => { PH[k] = e.target.value; phState(); } });
+    const ta = field('text', 'textarea', { class: 'ph-ta', rows: 7, placeholder: '客户原话 / 要做的事。微信里复制过来原样粘贴就行，不用整理。', 'aria-label': '客户原话或要做的事' });
+    const chat = field('chat', 'input', { class: 'ph-in', maxlength: 120, placeholder: '哪个群 / 哪位客户（可不填）', 'aria-label': '来自哪个群或客户' });
+    const note = field('note', 'input', { class: 'ph-in', maxlength: 2000, placeholder: '给分拣台的提示，如「片三的」（可不填）', 'aria-label': '给分拣台的提示' });
+    ta.value = PH.text; chat.value = PH.chat; note.value = PH.note;
+    const box = h('section', { class: 'ph-box' },
+      ta,
+      h('div', { class: 'ph-chips', id: 'ph-chips' }),
+      h('div', { class: 'ph-row' },
+        h('label', { class: 'ph-add' }, pick, h('span', null, '＋ 附件'), h('small', null, hover ? '拖进来、粘贴截图也行' : '拍照 / 相册 / 文件')),
+        h('span', { class: 'ph-lim', id: 'ph-lim' })),
+      h('div', { class: 'ph-meta' }, chat, note),
+      h('button', { class: 'ph-go', id: 'ph-go', type: 'button', onclick: phSubmit }, '交给分拣台'));
+    let depth = 0;
+    box.addEventListener('dragenter', e => { if ([...(e.dataTransfer?.types || [])].includes('Files')) { e.preventDefault(); depth++; box.classList.add('drop'); } });
+    box.addEventListener('dragover', e => { if ([...(e.dataTransfer?.types || [])].includes('Files')) e.preventDefault(); });
+    box.addEventListener('dragleave', () => { if (--depth <= 0) { depth = 0; box.classList.remove('drop'); } });
+    box.addEventListener('drop', e => { e.preventDefault(); depth = 0; box.classList.remove('drop'); phAdd([...(e.dataTransfer?.files || [])]); });
+    PH.el = h('div', { class: 'page ph' },
+      h('h2', { class: 'h' }, '派活'),
+      h('p', { class: 'ph-sub' }, '交给分拣台：它判断这件事该给哪个 Claude 会话，再到这块板上请你确认。'),
+      box,
+      h('div', { class: 'ph-recent', id: 'ph-recent' }));
+    main.replaceChildren(PH.el);
+  }
+  $('#ph-chips').replaceChildren(...PH.files.map(it => {
+    const ext = (it.name.match(/\.([a-z0-9]{1,5})$/i) || [])[1] || '文件';
+    const el = h('div', { class: 'ph-chip', 'data-lid': it.lid, title: it.name },
+      it.thumb ? h('img', { src: it.thumb, alt: '' }) : h('span', { class: 'ext' }, ext.toUpperCase()),
+      h('span', { class: 'nm' }, it.name),
+      h('span', { class: 'st' }),
+      h('span', { class: 'bar' }, h('i')),
+      it.err && it.file.size <= (PH.info?.max_bytes || 95 << 20) ? h('button', { class: 'rt', type: 'button', onclick: () => { it.err = ''; it.pct = 0; phPump(); phPaint(); } }, '重试') : null,
+      h('button', { class: 'rm', type: 'button', 'aria-label': '删掉这个附件', onclick: () => phRemove(it) }, '×'));
+    return el;
+  }));
+  PH.files.forEach(phChip);
+  phState();
+  const rows = PH.recent.map(r => {
+    const st = PH_LABEL[r.status] || r.status;
+    const meta = [ago(r.created), r.chat, r.files.length ? r.files.length + ' 个附件' : ''].filter(Boolean).join(' · ');
+    return h('div', { class: 'ph-item ' + r.status },
+      h('span', { class: 'ph-st' }, st),
+      h('div', null,
+        h('div', { class: 't' }, r.text || (r.files.map(f => f.name).join('、')) || '（空）'),
+        h('div', { class: 'm' }, meta),
+        r.error ? h('div', { class: 'm err' }, r.error) : null),
+      r.status === 'failed' ? h('button', { class: 'x', type: 'button', onclick: () => phRetry(r.id) }, '重试') : h('span'));
+  });
+  $('#ph-recent').replaceChildren(...kids(
+    PH.loadErr ? h('p', { class: 'm err' }, '载入失败：' + PH.loadErr) : null,
+    rows.length ? [h('h3', null, '最近交的'), rows] : null));
+}
+
+function phState() {
+  const go = $('#ph-go'); if (!go) return;
+  const off = PH.info && !PH.info.enabled;
+  const up = PH.files.filter(x => !x.fid && !x.err).length;
+  $('#ph-lim').textContent = PH.files.length ? `${PH.files.length} 个附件` + (up ? `，${up} 个在传` : '') : `单个不超过 ${fmtSize(PH.info?.max_bytes || 95 << 20)}`;
+  go.disabled = off || PH.busy || !!up || PH.files.some(x => x.err) || (!PH.text.trim() && !PH.files.length);
+  go.textContent = off ? '派活入口没开' : PH.busy ? '正在交…' : up ? '附件上传中…' : '交给分拣台';
 }
 
 /* ---------- 键盘 ---------- */
