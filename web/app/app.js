@@ -475,7 +475,7 @@ function mediaStage(c, ctx, o, only) {
       h('span', { class: 'ct', title: txt || null }, hl(txt)),
       m.kind === 'video' ? h('button', { class: 'zoom', type: 'button', onclick: () => openLb(c, i, ctx) }, '放大') : null,
       opt && canRevise(c, opt) ? reviseBtn(c, opt, ctx, 'rv cap-rv') : null);
-    st.append(h('figure', { class: 'fig' + (opt ? ' pick' : '') }, frame, cap));
+    st.append(h('figure', { class: 'fig' + (opt ? ' pick' : '') + (opt && opt.rec ? ' rec' : '') }, frame, cap));
   });
   let x0 = null, y0 = null;
   st.addEventListener('touchstart', e => { if (e.touches.length === 1) { x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; } }, { passive: true });
@@ -526,10 +526,11 @@ function actsEl(c, ctx) {
   const sel = S.multi.get(c.id) || new Set();
   const box = h('div', { class: 'acts' });
   if (!tileMode(c)) opts.forEach((x, i) => {
-    const cls = 'b' + (x.media != null && x.label.length <= 2 ? ' lt' : '') + (x.style === 'good' ? ' go' : x.style === 'bad' ? ' no' : '') + (sel.has(x.id) ? ' sel' : '');
+    const cls = 'b' + (x.media != null && x.label.length <= 2 ? ' lt' : '') + (x.style === 'good' ? ' go' : x.style === 'bad' ? ' no' : '') + (x.rec ? ' rec' : '') + (sel.has(x.id) ? ' sel' : '');
     // 「A · 一整句」这种选项名：手机按钮只显示 A，全名在图下面（429）
     const pre = (x.label.match(/^\s*([A-Za-z0-9]{1,2}|[①-⑩])\s*[·.、:：]\s*\S/) || x.label.match(/^\s*([①-⑳])\s+\S/) || [])[1];
     box.append(h('button', { class: cls + (pre ? ' hs' : ''), type: 'button', title: (x.desc ? x.desc + ' · ' : '') + '按 ' + (i + 1), 'data-oid': x.id, onclick: () => choose(c, x.id, ctx) },
+      x.rec ? h('b', { class: 'rtag' }, '推荐') : null,
       pre ? [h('span', { class: 'bl-full' }, hl(x.label)), h('span', { class: 'bl-short' }, pre)] : hl(x.label)));
   });
   // 手机上「③ ④ ⑤ … 都还油」混排：缩写成编号的按钮均分，没编号的按字长给够，不被截成「都…」（611）
@@ -938,7 +939,7 @@ function drawLbGrid(c, media) {
       attachLoupe(el, m);
       el.addEventListener('click', () => { LB.grid = false; LB.i = k; drawLb(); });
     }
-    box.append(h('figure', { class: 'lb-cell' + (k === LB.i ? ' cur' : '') }, h('div', { class: 'im' }, el),
+    box.append(h('figure', { class: 'lb-cell' + (k === LB.i ? ' cur' : '') + (o && o.rec ? ' rec' : '') }, h('div', { class: 'im' }, el),
       h('figcaption', null, o ? h('b', null, o.label) : (isBroken(m.label) ? h('i', { class: 'dot' }) : null), h('span', null, hl(o ? (m.caption || m.label || '') : [m.label, m.caption ? ' · ' + m.caption : ''].join(''))))));
   });
   stage.replaceChildren(box);

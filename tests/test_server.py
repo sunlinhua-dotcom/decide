@@ -167,6 +167,31 @@ class ServerTest(unittest.TestCase):
         self.assertIn(cid, self.cli_as(s, "ls", "--pending", "-p", "smoke").stdout)
         self.cli_as(s, "cancel", cid)
 
+    def test_three_choices_need_a_recommendation(self):
+        r = self.cli("q", "Which venue?", "Hall", "Park", "Roof", "-p", "smoke")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("--rec", r.stderr)
+        r = self.cli("q", "Which venue?", "Hall", "Park", "Roof", "-p", "smoke", "--rec", "2")
+        self.assertEqual(r.returncode, 2)  # the recommended option says nothing about why
+        r = self.cli("q", "Which venue?", "Hall::indoors", "Park::shade, near parking", "Roof::wind", "-p", "smoke", "--rec", "2")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        card = json.loads(self.req(f"/api/cards/{r.stdout.split()[0]}")[2])
+        self.assertEqual([o.get("rec", False) for o in card["options"]], [False, True, False])
+        self.assertEqual(self.cli("q", "Which venue?", "Hall", "Park", "Roof", "-p", "smoke", "--no-rec").returncode, 0)
+
+    def test_pick_takes_rec(self):
+        imgs = []
+        for i in range(3):
+            path = os.path.join(self.tmp, f"p{i}.png")
+            write_png(path, 40, 30)
+            imgs.append(path)
+        r = self.cli("pick", "-p", "smoke", "-t", "Cover shot", "--choice", f"A::{imgs[0]}::busy", "--choice",
+                     f"B::{imgs[1]}::cleanest, face in focus", "--choice", f"C::{imgs[2]}::dark", "--rec", "2")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        card = json.loads(self.req(f"/api/cards/{r.stdout.split()[0]}")[2])
+        self.assertEqual([o.get("rec", False) for o in card["options"]], [False, True, False])
+        self.assertEqual([m["label"] for m in card["media"]], ["A", "B", "C"])
+
     def test_svg_rec_word_turns_red(self):
         svg = os.path.join(self.tmp, "rec.svg")
         with open(svg, "w", encoding="utf-8") as f:
