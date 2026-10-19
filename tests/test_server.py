@@ -152,6 +152,16 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(self.cli("link", cid, "--clear").returncode, 0)
         self.assertNotIn("links", json.loads(self.req(f"/api/cards/{cid}")[2]))
 
+    def test_all_digit_card_id(self):
+        # Card ids are 8 hex chars; about 2% are all digits and must not be read as a sequence number.
+        code, _, _ = self.req("/api/cards", "POST", {"project": "smoke", "id": "12345678", "kind": "ask", "title": "Digits",
+                                                     "options": [{"id": "a", "label": "A"}], "links": [{"t": "x", "url": "https://example.com"}]})
+        self.assertEqual(code, 201)
+        r = self.cli("link", "12345678", "--clear")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("links", json.loads(self.req("/api/cards/12345678")[2]))
+        self.assertEqual(self.cli("cancel", "12345678").returncode, 0)
+
     def test_note_only_answer(self):
         cid = self.cli("q", "Which way?", "Left", "Right", "-p", "smoke").stdout.split()[0]
         code, _, _ = self.req(f"/api/cards/{cid}/answer", "POST", {"choice": ["note"], "note": ""})

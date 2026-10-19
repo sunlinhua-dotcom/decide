@@ -25,7 +25,7 @@ const hover = matchMedia('(hover: hover)').matches;
 
 if (/^#k=/.test(location.hash)) history.replaceState(null, '', location.pathname + location.search);
 
-const S = { ver: 0, skew: 0, loaded: false, projects: [], cards: [], byId: new Map(), cur: {}, multi: new Map(), activeQ: 0, last: null };
+const S = { ver: 0, skew: 0, loaded: false, projects: [], cards: [], byId: new Map(), cur: {}, multi: new Map(), activeQ: 0, last: null, wide: new Set() };
 const proj = slug => S.projects.find(p => p.slug === slug);
 const pname = slug => proj(slug)?.name || slug;
 
@@ -191,10 +191,28 @@ function renderFocus(host, ctx, o) {
     ui.root.replaceChildren(...kids(stageEl(c, ctx, o), infoEl(c, ctx, o), factsEl(c, o), o.compact ? null : railEl(q, ctx)));
     ui.id = c.id; ui.rev = c.rev;
     if (!o.compact) watchSheet(ui.root);
+    if (!o.compact && tileMode(c) && figIdx(c).length) guardFigs(host, ctx, o, c);
   } else if (!o.compact) {
     const old = $('.rail', ui.root), nr = railEl(q, ctx);
     old ? old.replaceWith(nr) : ui.root.append(nr);
   }
+}
+/* 运行时兜底：文字题排法下量一次整题的图，任何一张短边被压到看不清就整张卡换回大图 + 底部按钮。
+   以后再冒出没见过的卡型（选项多、说明长、图多），也不会把要看的东西挤没（611） */
+function guardFigs(host, ctx, o, c) {
+  const check = () => {
+    const ui = host._ui;
+    if (!ui || ui.id !== c.id || ui.rev !== c.rev || S.wide.has(c.id) || !tileMode(c)) return;
+    const min = innerWidth > 760 ? 90 : 60;
+    const small = [...ui.root.querySelectorAll('.qstage .stage .frame')].some(f => {
+      const r = f.getBoundingClientRect(), m = f.querySelector('img, video');
+      const ready = m && (m.tagName === 'VIDEO' ? m.readyState >= 1 : m.complete && m.naturalWidth);
+      return r.width > 0 && (ready || r.height > 0) && Math.min(r.width, r.height) < min;
+    });
+    if (!small || (c.options || []).some(x => x.media != null)) return;
+    S.wide.add(c.id); ui.rev = null; renderFocus(host, ctx, o);
+  };
+  setTimeout(check, 500); setTimeout(check, 1600);
 }
 function emptyEl(slug) {
   return h('div', { class: 'empty' }, h('h2', null, '都定完了'),
@@ -234,11 +252,16 @@ const isPerm = c => c.kind === 'perm';
 const figIdx = c => { const used = new Set((c.options || []).map(x => x.media).filter(m => m != null)); return (c.media || []).map((_, i) => i).filter(i => !used.has(i) && c.media[i].role !== 'src'); };
 /* 既有整题示意图、又有选项自带的图（392：两张方案图 + 三张选项小图）：示意图放上面，选项图进各自的卡，不再五张混排 */
 const mixed = c => (c.options || []).some(x => x.media != null) && figIdx(c).length > 0;
+/* 整题的图本身就是要比的东西（611：六条同种子视频 + 六个文字选项）：两张以上照片 / 视频，不算示意图 */
+const subjectFigs = c => figIdx(c).filter(i => c.media[i].kind === 'video' || !/\.svg$/i.test(c.media[i].src || '')).length >= 2;
 function tileMode(c) {
   const opts = c.options || [];
   if (isPerm(c) && opts.every(x => x.media == null)) return true;
+  // 兜底量过：文字题排法把图压到看不清，这张卡改回大图 + 底部按钮
+  if (S.wide.has(c.id) && opts.every(x => x.media == null)) return false;
   if (mixed(c)) return true;
-  return opts.length >= 2 && opts.every(x => x.media == null) && (!figIdx(c).length || Boolean(c.plan) || opts.some(x => x.desc));
+  // 选项带说明不再把要比的视频 / 照片挤成细条（611 在 1280×690 上六条视频只剩 17 px 高）
+  return opts.length >= 2 && opts.every(x => x.media == null) && (!figIdx(c).length || Boolean(c.plan) || (opts.some(x => x.desc) && !subjectFigs(c)));
 }
 /* 每个普通选项都能「选它 + 写哪里要改」；通过 / 返修这类本身带意见框的、多选卡不加 */
 const canRevise = (c, x) => !isPerm(c) && !c.multi && c.status === 'pending' && x.style !== 'bad' && x.style !== 'good';
@@ -487,10 +510,13 @@ function actsEl(c, ctx) {
   if (!tileMode(c)) opts.forEach((x, i) => {
     const cls = 'b' + (x.media != null && x.label.length <= 2 ? ' lt' : '') + (x.style === 'good' ? ' go' : x.style === 'bad' ? ' no' : '') + (sel.has(x.id) ? ' sel' : '');
     // 「A · 一整句」这种选项名：手机按钮只显示 A，全名在图下面（429）
-    const pre = (x.label.match(/^\s*([A-Za-z0-9]{1,2}|[①-⑩])\s*[·.、:：]\s*\S/) || [])[1];
-    box.append(h('button', { class: cls, type: 'button', title: (x.desc ? x.desc + ' · ' : '') + '按 ' + (i + 1), 'data-oid': x.id, onclick: () => choose(c, x.id, ctx) },
+    const pre = (x.label.match(/^\s*([A-Za-z0-9]{1,2}|[①-⑩])\s*[·.、:：]\s*\S/) || x.label.match(/^\s*([①-⑳])\s+\S/) || [])[1];
+    box.append(h('button', { class: cls + (pre ? ' hs' : ''), type: 'button', title: (x.desc ? x.desc + ' · ' : '') + '按 ' + (i + 1), 'data-oid': x.id, onclick: () => choose(c, x.id, ctx) },
       pre ? [h('span', { class: 'bl-full' }, x.label), h('span', { class: 'bl-short' }, pre)] : x.label));
   });
+  // 手机上「③ ④ ⑤ … 都还油」混排：缩写成编号的按钮均分，没编号的按字长给够，不被截成「都…」（611）
+  const hs = box.querySelectorAll('.b.hs').length;
+  if (hs && hs < box.querySelectorAll('.b[data-oid]').length) box.classList.add('mixs');
   if (c.multi && !tileMode(c)) box.append(h('button', { class: 'b go', type: 'button', disabled: !sel.size, onclick: () => submit(c, [...sel], ctx) }, sel.size ? `确定（${sel.size} 项）` : '确定'));
   // 手机上选项一长串，确定条在最底下够不着：底部常驻栏里也放一个
   if (c.multi && tileMode(c)) box.append(h('button', { class: 'b go mgo', type: 'button', disabled: !sel.size, onclick: () => submit(c, [...sel], ctx) }, sel.size ? `确定（${sel.size} 项）` : '先勾选'));
