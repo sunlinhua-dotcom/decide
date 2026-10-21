@@ -25,6 +25,7 @@ node --test tests/*.test.mjs                        # Claude Code hook logic (No
 - GitHub Actions runs both suites on every pull request (Python 3.9 and 3.13, with and without Pillow; Node 22).
 - Keep it dependency-free: the server and CLI use the Python standard library only; the web page has no build step.
 - One topic per pull request; describe what the user sees change, and add a screenshot for UI changes.
+- Changing card layout? Read `UI_RULES.md` first (layout priorities, fallback order, how to reproduce a layout bug before fixing it).
 - Add or update a test when you change the API, the CLI or the hooks.
 - Never commit keys, passwords, `data/` or real media.
 - By submitting a pull request you agree that your contribution is licensed under the Apache License 2.0, like the rest of the project.
@@ -48,6 +49,7 @@ node --test tests/*.test.mjs                        # Claude Code hook logic (No
 
 - 保持零依赖：服务端和命令行只用 Python 标准库，网页不引入构建步骤。
 - 一个 PR 只做一件事，写清用户看到的变化，界面改动附截图。
+- 改卡片版面之前先读 `UI_RULES.md`（版面规则、退路次序、先复现再改的流程）。
 - 改了 API、命令行或钩子，就补或改对应的测试。
 - 不要提交密钥、密码、`data/` 目录和真实素材。
 - 提交 PR 即表示你同意贡献内容按 Apache License 2.0 授权，与项目其余部分一致。
