@@ -429,17 +429,17 @@ function sideFit(q, ars) {
       if (p.minH < PICMIN) { if (!loose || a > loose.a * 1.01) loose = { ...o, a }; return; }  // 屏太小谁都够不着保底，就退回面积最大的
       if (!best || a > best.a * 1.01) best = { ...o, a };
     };
-    // 文字选项先按常规卡试，右栏放不下再换紧凑卡
+    // 文字选项先按常规卡试，右栏放不下再换紧凑卡；紧凑卡可以把右栏放到更宽、排三列
     for (const dn of pics ? [false] : [false, true]) {
       if (best) break;
-      for (const frac of [0.2, 0.24, 0.28, 0.33, 0.38, 0.44, 0.5, 0.56]) {
+      for (const frac of dn ? [0.33, 0.38, 0.44, 0.5, 0.56, 0.62, 0.68] : [0.2, 0.24, 0.28, 0.33, 0.38, 0.44, 0.5, 0.56]) {
         const S = Math.round(W * frac);
-        for (const tc of tcs) for (const pm of pms) {
+        for (const tc of dn ? [1, 2, 3] : tcs) for (const pm of pms) {
           if ((S - 10 * (tc - 1)) / tc < (pics ? 180 : 240)) continue;  // 每列选项太窄字会一字一行
           const o = { side: true, S, tc, pm, dn };
           apply(o);
           if (!over()) { consider(o, W - S - GAP, H); if (!pics) break; }
-          else if (dn && frac <= 0.44) {  // 都放不下时的退路：右栏里滚，挑露出最多的那种
+          else if (dn && frac <= 0.56) {  // 都放不下时的退路：右栏里滚，挑露出最多的那种
             const t = tilesOf(), d = t.scrollHeight - t.clientHeight;
             if (!scroll || d < scroll.d - 4) scroll = { ...o, d };
           }
