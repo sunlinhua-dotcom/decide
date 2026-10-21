@@ -369,9 +369,10 @@ const hasPics = c => (c.options || []).some(x => x.pic || x.gen || x.media != nu
 function stageEl(c, ctx, o) {
   if (!tileMode(c)) return mediaStage(c, ctx, o);
   const has = figIdx(c).length > 0 || Boolean(c.code) || Boolean(c.plan);
-  // 有示意图、选项不多：宽屏上选项卡竖排在图右边，图拿满整个高度（10-17 用户嫌 126 的图太小）
+  // 有示意图：宽屏上选项卡竖排在图右边，图拿满整个高度
   // 选项带图也进右栏：放不下时 sideFit 会加宽、排两列，再不行才挪到图下方（392 方案图被压到 112 px）
-  const side = has && (c.options || []).length <= 5;
+  // 选项多也进右栏：排到图下会把图压扁，兜底换回「大图 + 底部按钮」又会折成很多行
+  const side = has && (c.options || []).length <= 9;
   const fig = c.plan ? planEl(c, ctx) : figIdx(c).length ? mediaStage(c, ctx, o, figIdx(c)) : c.code ? codeEl(c) : null;
   const q = h('div', { class: 'qstage' + (has ? ' has-fig' : '') + (side ? ' side' : '') + (hasPics(c) ? ' pics' : '') + (c.plan ? ' planq' : '') }, fig, tilesEl(c, ctx));
   // 方案没有固定宽高比（ars 为空）：求解器取放得下全部选项的最窄右栏，剩下的都给方案文字
@@ -409,7 +410,7 @@ function sideFit(q, ars) {
   };
   const set = (k, v) => v == null ? q.style.removeProperty(k) : q.style.setProperty(k, v);
   const apply = o => {
-    q.classList.toggle('side', o.side); q.classList.toggle('below', !o.side);
+    q.classList.toggle('side', o.side); q.classList.toggle('below', !o.side); q.classList.toggle('dense', Boolean(o.dn));
     set('--sidew', o.side ? o.S + 'px' : null); set('--tcols', o.tc || null); set('--picmax', o.pm ? o.pm + 'vh' : null);
   };
   const fit = () => {
@@ -420,7 +421,7 @@ function sideFit(q, ars) {
     const tcs = pics ? [...new Set([pn, Math.min(2, pn), 1])] : [1, 2];
     const pms = pics ? [56, 46, 38, 31, 25, 20, 16] : [0];
     const PICMIN = Math.max(130, H * 0.2);
-    let best = null, loose = null;
+    let best = null, loose = null, scroll = null;
     const consider = (o, figW, figH) => {
       // 示意图满是小字，面积优先给它；选项图只要认得出：每张至少 PICMIN 高，够了再按半权重往大里加
       const f = gridArea(ars, figW, figH, 16, CAP), p = pics ? picArea() : { a: 0, minH: Infinity };
@@ -428,13 +429,21 @@ function sideFit(q, ars) {
       if (p.minH < PICMIN) { if (!loose || a > loose.a * 1.01) loose = { ...o, a }; return; }  // 屏太小谁都够不着保底，就退回面积最大的
       if (!best || a > best.a * 1.01) best = { ...o, a };
     };
-    for (const frac of [0.2, 0.24, 0.28, 0.33, 0.38, 0.44, 0.5, 0.56]) {
-      const S = Math.round(W * frac);
-      for (const tc of tcs) for (const pm of pms) {
-        if ((S - 10 * (tc - 1)) / tc < (pics ? 180 : 240)) continue;  // 每列选项太窄字会一字一行
-        const o = { side: true, S, tc, pm };
-        apply(o);
-        if (!over()) { consider(o, W - S - GAP, H); if (!pics) break; }
+    // 文字选项先按常规卡试，右栏放不下再换紧凑卡
+    for (const dn of pics ? [false] : [false, true]) {
+      if (best) break;
+      for (const frac of [0.2, 0.24, 0.28, 0.33, 0.38, 0.44, 0.5, 0.56]) {
+        const S = Math.round(W * frac);
+        for (const tc of tcs) for (const pm of pms) {
+          if ((S - 10 * (tc - 1)) / tc < (pics ? 180 : 240)) continue;  // 每列选项太窄字会一字一行
+          const o = { side: true, S, tc, pm, dn };
+          apply(o);
+          if (!over()) { consider(o, W - S - GAP, H); if (!pics) break; }
+          else if (dn && frac <= 0.44) {  // 都放不下时的退路：右栏里滚，挑露出最多的那种
+            const t = tilesOf(), d = t.scrollHeight - t.clientHeight;
+            if (!scroll || d < scroll.d - 4) scroll = { ...o, d };
+          }
+        }
       }
     }
     for (const pm of pms) {  // 选项放在示意图下面：示意图拿剩下的高度
@@ -443,7 +452,7 @@ function sideFit(q, ars) {
       const T = tilesOf().getBoundingClientRect().height;
       if (H - T - 18 > H * 0.3) consider(o, W, H - T - 18);
     }
-    apply(best || loose || { side: false });
+    apply(best || loose || scroll || { side: false });
   };
   let w = 0, hh = 0;
   new ResizeObserver(() => { if (q.clientWidth === w && q.clientHeight === hh) return; w = q.clientWidth; hh = q.clientHeight; fit(); }).observe(q);
