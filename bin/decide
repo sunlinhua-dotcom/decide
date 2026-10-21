@@ -1154,6 +1154,11 @@ def cmd_hook(a):
     c = hook_conf()
     if not sess or not c:
         return 0
+    if a.event == "prompt":
+        try:  # 用户在对话里说话了：板上「在对话里说」的卡停表，不再提醒（10-21）
+            http(c, "POST", "/api/heard", {"session": sess}, timeout=2)
+        except Exception:  # noqa: BLE001
+            pass
     try:
         st = session_state(c, sess, 3)
         if a.event == "stop" and not st["listening"] and any(not x["watched"] for x in st["pending"]):

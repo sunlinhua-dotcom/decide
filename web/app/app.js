@@ -75,6 +75,7 @@ async function loadState() {
   S.ver = j.ver; S.skew = Date.now() / 1000 - j.now;
   S.projects = j.projects; S.cards = j.cards; S.byId = new Map(j.cards.map(c => [c.id, c]));
   S.intake = !!j.intake; $('#ph-link').hidden = !S.intake;
+  S.voice = !!j.voice; S.searchAI = !!j.search_ai; S.chatWait = j.chat_wait || 900;
   const fresh = S.seen ? j.cards.filter(c => c.status === 'pending' && !S.seen.has(c.id)) : [];
   S.seen = new Set(j.cards.filter(c => c.status === 'pending').map(c => c.id));
   if (fresh.length) startFlash();
@@ -102,10 +103,10 @@ window.addEventListener('pageshow', e => { if (e.persisted) loadState().catch(()
 window.addEventListener('online', () => loadState().catch(() => {}));
 
 let baseTitle = 'decide', flashTimer = null;
-function startFlash() {
+function startFlash(text = '● 新卡片') {
   if (flashTimer || !document.hidden) return;
   let on = false;
-  flashTimer = setInterval(() => { on = !on; document.title = on ? '● 新卡片' : baseTitle; }, 1000);
+  flashTimer = setInterval(() => { on = !on; document.title = on ? text : baseTitle; }, 1000);
 }
 function stopFlash() { if (flashTimer) { clearInterval(flashTimer); flashTimer = null; document.title = baseTitle; } }
 
@@ -153,10 +154,11 @@ function queue(slug) {
 function render() {
   const r = S.route = parseRoute();
   renderBar(r);
+  renderCw();
   const main = $('#main');
   if (!S.loaded) return;
   const key = r.type + ':' + (r.slug || r.id || (r.slugs || []).join(','));
-  if (main.dataset.view !== key) { main.replaceChildren(); main.dataset.view = key; main._ui = null; main._q = null; }
+  if (main.dataset.view !== key) { main.replaceChildren(); main.dataset.view = key; main._ui = null; main._q = null; main._done = null; }
   if (r.type === 'focus') {
     const k = 'f:' + (r.slug || '');
     if (!main._ctx || main._ctx.key !== k) main._ctx = { slug: r.slug, key: k };
@@ -171,13 +173,37 @@ function render() {
   if (!flashTimer) document.title = baseTitle;
 }
 
+/* 顶栏（10-21 用户定）：只留有待定的项目（加上正在看的那个），每个项目一块色块，颜色互不重复；不用紫色、绿色。「全部」有待定时是红块 */
+const TAB_COLORS = [['#2563eb', '#fff'], ['#f2b705', '#1d1d1b'], ['#1e3a8a', '#fff'], ['#ea580c', '#fff'], ['#0ea5e9', '#fff'], ['#a16207', '#fff'], ['#475569', '#fff']];
+const TAB_RED = ['#d33f2a', '#fff'];
+function hashStr(t) { let x = 7; for (const ch of t) x = (x * 31 + ch.charCodeAt(0)) >>> 0; return x; }
+// 老项目先挑：按名字哈希取色，和已上顶栏的撞了就往后顺延；上一轮分到的颜色不变，免得一来新项目大家全换色
+function tabColors(slugs) {
+  const prev = S.pcol || new Map(), out = new Map(), used = new Set();
+  const order = [...slugs].sort((a, b) => ((proj(a)?.created || 0) - (proj(b)?.created || 0)) || (a < b ? -1 : 1));
+  for (const t of order) if (prev.has(t) && !used.has(prev.get(t))) { out.set(t, prev.get(t)); used.add(prev.get(t)); }
+  for (const t of order) {
+    if (out.has(t)) continue;
+    let i = hashStr(t) % TAB_COLORS.length;
+    for (let k = 0; k < TAB_COLORS.length && used.has(i); k++) i = (i + 1) % TAB_COLORS.length;
+    out.set(t, i); used.add(i);
+  }
+  S.pcol = new Map([...prev, ...out]);
+  return out;
+}
+const pcol = slug => TAB_COLORS[S.pcol?.get(slug) ?? (hashStr(slug) % TAB_COLORS.length)];
 function renderBar(r) {
   const total = queue(null).length;
-  const ps = S.projects.filter(p => !p.archived).sort((a, b) => (b.pending - a.pending) || (b.last - a.last));
-  const tab = (href, label, n, on) => h('a', { class: 'tab' + (on ? ' on' : '') + (n ? '' : ' zero'), href, 'data-nav': true }, label, h('span', { class: 'n' }, n));
+  const cur = r.type === 'focus' ? r.slug : null;
+  const ps = S.projects.filter(p => !p.archived && (queue(p.slug).length || p.slug === cur))
+    .sort((a, b) => (queue(b.slug).length - queue(a.slug).length) || (b.last - a.last));
+  tabColors(ps.filter(p => queue(p.slug).length).map(p => p.slug));
+  const tab = (href, label, n, on, col) => h('a', { class: 'tab' + (on ? ' on' : '') + (n ? ' has' : ' zero'), href, 'data-nav': true, style: n ? `--tb:${col[0]};--tf:${col[1]}` : null }, label, h('span', { class: 'n' }, n));
   $('#tabs').replaceChildren(...kids(
-    tab('/', '全部', total, r.type === 'focus' && !r.slug),
-    ps.map(p => tab('/p/' + p.slug, p.name, queue(p.slug).length, r.type === 'focus' && r.slug === p.slug))));
+    tab('/', '全部', total, r.type === 'focus' && !r.slug, TAB_RED),
+    ps.map(p => tab('/p/' + p.slug, p.name, queue(p.slug).length, cur === p.slug, pcol(p.slug)))));
+  const band = r.type !== 'focus' ? '' : r.slug ? (queue(r.slug).length ? pcol(r.slug)[0] : '') : total ? TAB_RED[0] : '';
+  $('.bar')?.style.setProperty('--band', band || 'transparent');
   const left = r.type === 'focus' ? queue(r.slug).length : 0;
   $('#left').replaceChildren(...(r.type === 'focus' && left ? ['还剩', h('span', { class: 'n' }, left)] : []));
   $$('.right a[data-k]').forEach(a => a.classList.toggle('on', a.dataset.k === (r.type === 'review' ? 'done' : r.type)));
@@ -288,6 +314,13 @@ const canRevise = (c, x) => !isPerm(c) && !c.multi && c.status === 'pending' && 
 function reviseBtn(c, x, ctx, cls) {
   return h('button', { class: cls || 'rv', type: 'button', title: `选「${x.label}」并写哪里要改`, onclick: e => { e.stopPropagation(); revise(c, x.id, ctx); } }, '要改…');
 }
+// 「要改…」旁边一个话筒（10-21）：按住说话，松开把字填进这个选项的意见框；返修 / 要改这类兜底项只放话筒
+function rvGroup(c, x, ctx, rv) {
+  const vm = c.status === 'pending' && !c.multi && !isPerm(c) && (rv || x.style === 'bad');
+  const mic = vm ? micBtn(voNote(c, x.id, cur => revise(cur, x.id, ctx)), `说「${x.label}」哪里要改：按住说话，松开变成文字`) : null;
+  if (!rv && !mic) return null;
+  return h('div', { class: 'rvg' }, rv ? reviseBtn(c, x, ctx) : null, mic);
+}
 function tilesEl(c, ctx) {
   const opts = c.options || [], sel = S.multi.get(c.id) || new Set();
   const noting = S.note && S.note.id === c.id ? S.note.oid : null;
@@ -300,8 +333,8 @@ function tilesEl(c, ctx) {
   const long = main.reduce((a, x) => a + (x.label || '').length, 0) / Math.max(1, m) > 14;
   const cols = m <= 3 ? m : m === 4 ? (long ? 2 : 4) : m <= 6 ? 3 : 4;
   return h('div', { class: 'tiles', style: `--n:${cols};--pn:${pn}`, role: 'group', 'aria-label': '选项' }, opts.map((x, i) => {
-    const rv = canRevise(c, x);
-    return h('div', { class: 'tilew' + (rv ? ' has-rv' : '') + (pics && !(optPic(c, x) || x.gen) ? ' nopic' : '') + (slim(x) ? ' slim' : '') },
+    const rv = canRevise(c, x), g = rvGroup(c, x, ctx, rv);
+    return h('div', { class: 'tilew' + (g ? ' has-rv' : '') + (g && g.querySelector('.mic') ? ' has-mic' : '') + (pics && !(optPic(c, x) || x.gen) ? ' nopic' : '') + (slim(x) ? ' slim' : '') },
       h('button', { class: 'tile' + (x.style === 'good' ? ' go' : x.style === 'bad' ? ' no' : '') + (x.rec ? ' rec' : '') + (sel.has(x.id) || noting === x.id || mine.ids.has(x.id) ? ' sel' : ''),
         type: 'button', 'data-oid': x.id, title: i < 9 ? '按 ' + (i + 1) + (rv ? '；Shift + ' + (i + 1) + ' 选它并写意见' : '') : '', onclick: () => choose(c, x.id, ctx) },
         optPic(c, x) || x.gen ? picEl(c, x, ctx) : null,
@@ -309,7 +342,7 @@ function tilesEl(c, ctx) {
         x.rec ? h('span', { class: 'tile-tag' }, '推荐') : null,
         h('span', { class: 'tile-t' }, hl(x.label)),
         x.desc ? h('span', { class: 'tile-d' }, hl(x.desc)) : null),
-      rv ? reviseBtn(c, x, ctx) : null);
+      g);
   }), c.multi && c.status === 'pending' ? multiBar(c, ctx) : null);
 }
 /* 多选：选项下面一条，写清可多选、已选几项，确定 / 确定并写意见都在手边（407 的确定按钮藏在标题旁） */
@@ -482,7 +515,7 @@ function mediaStage(c, ctx, o, only) {
       opt && mineOf(c).ids.has(opt.id) ? h('span', { class: 'mine' }, mineOf(c).tag) : null,
       h('span', { class: 'ct', title: txt || null }, hl(txt)),
       m.kind === 'video' ? h('button', { class: 'zoom', type: 'button', onclick: () => openLb(c, i, ctx) }, '放大') : null,
-      opt && canRevise(c, opt) ? reviseBtn(c, opt, ctx, 'rv cap-rv') : null);
+      opt && canRevise(c, opt) ? [reviseBtn(c, opt, ctx, 'rv cap-rv'), micBtn(voNote(c, opt.id, cur => revise(cur, opt.id, ctx)), `说「${opt.label}」哪里要改：按住说话`, 'cap-mic')] : null);
     st.append(h('figure', { class: 'fig' + (opt ? ' pick' : '') + (opt && opt.rec ? ' rec' : '') + (opt && mineOf(c).ids.has(opt.id) ? ' mine' : '') }, frame, cap));
   });
   let x0 = null, y0 = null;
@@ -509,7 +542,7 @@ function infoEl(c, ctx, o) {
   return h('div', { class: 'info' },
     h('div', { class: 'seq', title: '在 Claude 里说「' + pad(c.seq) + ' 返修 …」就能指这一张' }, pad(c.seq)),
     h('div', { class: 'tt' },
-      o.compact ? null : h('span', { class: 'proj' }, pname(c.project)),
+      o.compact ? null : h('span', { class: 'proj', style: `--pc:${pcol(c.project)[0]}` }, pname(c.project)),
       // 长标题在手机上字号小一档：三位数编号挤窄了标题列，40 字的标题会折成四行（441）
       h('h1', { class: [...(c.title || '')].length > 30 ? 'long' : null }, hl(c.title)),
       c.sub ? h('p', null, hl(c.sub)) : null,
@@ -541,6 +574,10 @@ function actsEl(c, ctx) {
     box.append(h('button', { class: cls + (pre ? ' hs' : ''), type: 'button', title: (x.desc ? x.desc + ' · ' : '') + '按 ' + (i + 1), 'data-oid': x.id, onclick: () => choose(c, x.id, ctx) },
       x.rec ? h('b', { class: 'rtag' }, '推荐') : null,
       pre ? [h('span', { class: 'bl-full' }, hl(x.label)), h('span', { class: 'bl-short' }, pre)] : hl(x.label)));
+    if (x.style === 'bad' && !c.multi && c.status === 'pending' && !isPerm(c)) {
+      const m = micBtn(voNote(c, x.id, cur => revise(cur, x.id, ctx)), `说「${x.label}」哪里要改：按住说话，松开变成文字`, 'big');
+      if (m) box.append(m);
+    }
   });
   // 手机上「③ ④ ⑤ … 都还油」混排：缩写成编号的按钮均分，没编号的按字长给够，不被截成「都…」（611）
   const hs = box.querySelectorAll('.b.hs').length;
@@ -554,7 +591,8 @@ function actsEl(c, ctx) {
   box.prepend(h('span', { class: 'chats' },
     h('button', { class: 'chat', type: 'button', title: '意见在 Claude 对话里打，这些卡从这里清掉（按 C）', onclick: () => toChat(c, ctx) },
       grp.length > 1 ? `这 ${grp.length} 张在对话里说` : '在对话里说'),
-    h('button', { class: 'chat', type: 'button', title: '不选现成选项，直接在这里写全部意见（按 W）', onclick: () => freeNote(c, ctx) }, '在这里写意见')));
+    h('span', { class: 'cw' }, h('button', { class: 'chat', type: 'button', title: '不选现成选项，直接在这里写全部意见（按 W）', onclick: () => freeNote(c, ctx) }, '在这里写意见'),
+      micBtn(voNote(c, '__note', cur => freeNote(cur, ctx)), '直接说意见：按住说话，松开变成文字'))));
   return box;
 }
 
@@ -633,6 +671,7 @@ function noteEl(c, ctx) {
   const bad = x.style === 'bad';
   const tip = free ? (c.note_hint || '不用选现成选项，直接写：要哪个、哪里要改、改成什么样') : c.note_hint || (bad ? '哪里要改？写清楚改哪、改成什么样' : `选「${x.label}」，但哪里要改？写清楚改哪、改成什么样`);
   const ta = h('textarea', { class: 'note', rows: 2, placeholder: tip, 'aria-label': x.label + '意见' });
+  ta._cid = c.id;
   ta.value = S.note.text || '';
   ta.addEventListener('input', () => { if (S.note) S.note.text = ta.value; });
   const send = () => {
@@ -646,12 +685,18 @@ function noteEl(c, ctx) {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); send(); }
     else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); cancel(); }
   });
-  setTimeout(() => { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }, 30);
+  noteFocus(ta);
   return h('div', { class: 'acts noting' }, free ? h('div', { class: 'nfor' }, h('b', null, '直接写意见'), ' · 不选现成选项') : bad ? null : h('div', { class: 'nfor' }, h('b', null, x.label), many ? ' · 附意见' : ' · 要改'), ta,
     h('div', { class: 'nbtns' },
       h('span', { class: 'nh' }, '回车提交 · Shift + 回车换行 · Esc 取消'),
+      micBtn(voNote(c, S.note.oid, () => {}), '接着说：按住说话，松开把字接在后面'),
       h('button', { class: 'tx', type: 'button', onclick: cancel }, '取消'),
       h('button', { class: 'b no', type: 'button', onclick: send }, free ? '提交意见' : bad ? '提交' + x.label : '提交意见')));
+}
+// 语音填进来的意见框：电脑上照常聚焦好按回车，手机上不聚焦、免得键盘弹出来挡住
+function noteFocus(ta) {
+  const quiet = S.voQuiet && !hover; S.voQuiet = false;
+  if (!quiet) setTimeout(() => { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }, 30);
 }
 function ctxHost(ctx) { return [$('#main'), ...$$('.q .qb')].find(el => el._ctx === ctx); }
 
@@ -687,6 +732,7 @@ function chatGroup(c) {
   return c.session ? S.cards.filter(x => x.status === 'pending' && x.session === c.session) : [c];
 }
 async function toChat(c, ctx) {
+  askNotify();
   const grp = chatGroup(c).filter(x => x.status === 'pending');
   if (!grp.length) return;
   grp.forEach(x => { x.status = 'answered'; S.multi.delete(x.id); });
@@ -756,31 +802,96 @@ function renderGrid(main, slugs) {
 
 /* ---------- 已定 ---------- */
 const doneList = () => S.cards.filter(c => c.status !== 'pending').sort((a, b) => b.updated - a.updated).slice(0, 200);
+function doneRow(c, order, hits) {
+  const a = c.answer || {};
+  const m = (c.media || []).find(x => x.kind === 'img');
+  const bad = a.redo || (c.options || []).some(x => (a.choice || []).includes(x.id) && x.style === 'bad');
+  const verdict = c.status === 'cancelled' ? (isPerm(c) ? '别处答了' : '已撤销') : (a.labels || []).join('、');
+  const deliver = c.status === 'cancelled' || isPerm(c) ? '' : c.acked ? '已交给 Claude' : c.session ? 'Claude 还没收到' : '';
+  const meta = [pname(c.project), ago(c.updated), a.device, deliver].filter(Boolean).join(' · ');
+  const mk = t => hits && hits.length ? markHits(t, hits) : hl(t);
+  // 整行点开重看（10-21）：只看不问意见，要返修在里面点
+  const open = () => { S.rvOrder = order; go('/done/' + c.id); };
+  return h('div', { class: 'row', role: 'link', tabindex: '0', title: '点开重看', onclick: open, onkeydown: e => { if (e.key === 'Enter' && e.target === e.currentTarget) { e.preventDefault(); open(); } } },
+    h('span', { class: 'n s' }, pad(c.seq)),
+    m ? h('img', { src: m.thumb || m.src, alt: '', loading: 'lazy' }) : h('span', { class: 'ph' }),
+    h('div', null, h('div', { class: 't' }, mk(c.title)), h('div', { class: 'm' }, meta), a.note ? h('div', { class: 'm' }, (a.redo ? '返修：' : '备注：'), mk(a.note)) : null),
+    h('span', { class: 'v' + (c.status === 'cancelled' ? ' cx' : bad ? ' no' : ''), title: verdict }, mk(verdict)),
+    isPerm(c) ? h('span') : h('button', { class: 'x', type: 'button', onclick: e => { e.stopPropagation(); reopenCard(c); } }, '撤回重定'));
+}
+// 命中的词标黄
+function markHits(t, hits) {
+  t = String(t ?? '');
+  const ws = [...new Set(hits.map(String).filter(w => w.trim()))].sort((a, b) => b.length - a.length).slice(0, 24);
+  if (!ws.length || !t) return t;
+  const re = new RegExp('(' + ws.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')', 'ig');
+  return t.split(re).filter(Boolean).map(p => ws.some(w => w.toLowerCase() === p.toLowerCase()) ? h('mark', null, p) : p);
+}
+/* 已定列表 + 搜索（10-21 用户定）：边打边搜（编号、标题、选项、意见、备注，字面 + 模糊），回车交给配置的对话模型按意思找 */
 function renderDone(main) {
-  const done = doneList();
-  const rows = done.map(c => {
-    const a = c.answer || {};
-    const m = (c.media || []).find(x => x.kind === 'img');
-    const bad = a.redo || (c.options || []).some(x => (a.choice || []).includes(x.id) && x.style === 'bad');
-    const verdict = c.status === 'cancelled' ? (isPerm(c) ? '别处答了' : '已撤销') : (a.labels || []).join('、');
-    const deliver = c.status === 'cancelled' || isPerm(c) ? '' : c.acked ? '已交给 Claude' : c.session ? 'Claude 还没收到' : '';
-    const meta = [pname(c.project), ago(c.updated), a.device, deliver].filter(Boolean).join(' · ');
-    // 整行点开重看（10-21）：只看不问意见，要返修在里面点
-    const open = () => { S.rvOrder = done.map(x => x.id); go('/done/' + c.id); };
-    return h('div', { class: 'row', role: 'link', tabindex: '0', title: '点开重看', onclick: open, onkeydown: e => { if (e.key === 'Enter' && e.target === e.currentTarget) { e.preventDefault(); open(); } } },
-      h('span', { class: 'n s' }, pad(c.seq)),
-      m ? h('img', { src: m.thumb || m.src, alt: '', loading: 'lazy' }) : h('span', { class: 'ph' }),
-      h('div', null, h('div', { class: 't' }, hl(c.title)), h('div', { class: 'm' }, meta), a.note ? h('div', { class: 'm' }, (a.redo ? '返修：' : '备注：') + a.note) : null),
-      h('span', { class: 'v' + (c.status === 'cancelled' ? ' cx' : bad ? ' no' : ''), title: verdict }, verdict),
-      isPerm(c) ? h('span') : h('button', { class: 'x', type: 'button', onclick: e => { e.stopPropagation(); reopenCard(c); } }, '撤回重定'));
-  });
-  const projs = S.projects.map(p => h('div', { class: 'prow' + (p.archived ? ' arch' : '') },
+  let ui = main._done;
+  if (!ui) {
+    const q = new URLSearchParams(location.search).get('q') || '';
+    const inp = h('input', { class: 'sq', type: 'search', enterkeyhint: 'search', autocomplete: 'off', 'aria-label': '搜索已定的卡',
+      placeholder: S.searchAI ? '搜编号、标题、意见…　回车按意思找' : '搜编号、标题、意见…' });
+    inp.value = q;
+    ui = main._done = { inp, info: h('div', { class: 'sinfo', 'aria-live': 'polite' }), list: h('div', { class: 'dlist' }), projs: h('div'), q: '', res: null, seq: 0, busy: '', err: '', timer: null };
+    inp.addEventListener('input', () => { clearTimeout(ui.timer); ui.timer = setTimeout(() => doneSearch(ui, inp.value, false), 220); });
+    inp.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); clearTimeout(ui.timer); doneSearch(ui, inp.value, S.searchAI); }
+      else if (e.key === 'Escape' && inp.value) { e.preventDefault(); e.stopPropagation(); inp.value = ''; doneSearch(ui, '', false); }
+    });
+    main.replaceChildren(h('div', { class: 'page' },
+      h('div', { class: 'dhead' }, h('h2', { class: 'h' }, '已定'),
+        h('div', { class: 'sbox', role: 'search' }, inp, micBtn(t => { inp.value = t; doneSearch(ui, t, S.searchAI); }, '说要找哪张：按住说话，松开就搜'))),
+      ui.info, ui.list, ui.projs));
+    const last = S.doneLast;
+    if (q && last && last.q === q) { ui.q = q; ui.res = last.res; }
+    else if (q) doneSearch(ui, q, false);
+  }
+  paintDone(ui);
+}
+async function doneSearch(ui, q, ai) {
+  q = q.trim();
+  const my = ++ui.seq;
+  const url = q ? '/done?q=' + encodeURIComponent(q) : '/done';
+  if (location.pathname + location.search !== url) history.replaceState(null, '', url);
+  S.doneHref = url;
+  ui.err = '';
+  if (!q) { ui.q = ''; ui.res = null; ui.busy = ''; S.doneLast = null; return paintDone(ui); }
+  ui.busy = ai ? 'ai' : 'lex'; paintInfo(ui);
+  let res = null;
+  try { res = await api('/api/search?q=' + encodeURIComponent(q) + (ai ? '&ai=1' : '')); }
+  catch (e) {
+    if (my !== ui.seq) return;
+    ui.err = e.message;
+    if (ai) { try { res = await api('/api/search?q=' + encodeURIComponent(q)); } catch {} }
+  }
+  if (my !== ui.seq) return;
+  ui.busy = '';
+  if (res) { ui.q = q; ui.res = res; S.doneLast = { q, res }; }
+  paintDone(ui);
+}
+function paintInfo(ui) {
+  const n = ui.q && ui.res ? ui.res.cards.length : 0;
+  const bits = ui.busy === 'ai' ? [h('span', { class: 'busy' }, '正在按意思找…')]
+    : ui.busy ? [h('span', { class: 'busy' }, '搜索中…')]
+    : !ui.q ? ['点一行重看；要改在里面点「返修」', S.searchAI ? '搜索框里回车：按意思找' : null]
+    : ui.res.ai ? [`按意思找到 ${n} 张`, h('button', { class: 'tx', type: 'button', onclick: () => doneSearch(ui, ui.inp.value, false) }, '看字面匹配')]
+    : [`找到 ${ui.res.total ?? n} 张${(ui.res.total ?? n) > n ? `，先列 ${n} 张` : ''}`, S.searchAI ? '回车按意思再找' : null];
+  ui.info.replaceChildren(...kids(bits, ui.err ? h('span', { class: 'err' }, ui.err) : null));
+}
+function paintDone(ui) {
+  paintInfo(ui);
+  const q = ui.q && ui.res ? ui.q : '';
+  if (q) for (const x of ui.res.cards) if (!S.byId.has(x.id)) (S.rvExtra ||= new Map()).set(x.id, x);
+  const cards = q ? ui.res.cards.map(x => S.byId.has(x.id) ? Object.assign({}, S.byId.get(x.id), { hits: x.hits }) : x) : doneList();
+  const order = cards.map(c => c.id);
+  ui.list.replaceChildren(...(cards.length ? cards.map(c => doneRow(c, order, c.hits)) : [h('p', { class: 'empty-s' }, q ? (ui.res.ai ? '按意思也没找到。换个说法试试' : S.searchAI ? '没找到。按回车按意思找' : '没找到，换个说法试试') : '还没有定过的卡片。')]));
+  const projs = q ? [] : S.projects.map(p => h('div', { class: 'prow' + (p.archived ? ' arch' : '') },
     h('span', null, p.name), h('span', { class: 'm', style: 'font-size:12px;color:var(--ink-3)' }, `待定 ${queue(p.slug).length} · 已定 ${p.answered}`),
     h('button', { class: 'x', type: 'button', onclick: async () => { await api('/api/projects', { method: 'POST', body: { slug: p.slug, archived: !p.archived } }); await loadState(); } }, p.archived ? '恢复' : '归档')));
-  main.replaceChildren(h('div', { class: 'page' },
-    h('h2', { class: 'h' }, '已定', rows.length ? h('small', null, '点一行重看；要改在里面点「返修」') : null),
-    rows.length ? rows : h('p', { style: 'color:var(--ink-3)' }, '还没有定过的卡片。'),
-    projs.length ? h('div', { class: 'projs' }, h('h3', null, '项目（做完的归档，就不再出现在顶部）'), projs) : null));
+  ui.projs.replaceChildren(...(projs.length ? [h('div', { class: 'projs' }, h('h3', null, '项目（做完的归档，就不再出现在顶部）'), projs)] : []));
 }
 async function reopenCard(c) {
   try { await api('/api/cards/' + c.id + '/reopen', { method: 'POST', body: {} }); S.cur['f:' + c.project] = c.id; go('/p/' + c.project); }
@@ -824,7 +935,7 @@ function renderReview(main, id) {
 function rvNav(c) {
   const ids = rvOrder(), i = ids.indexOf(c.id), n = ids.length;
   return h('nav', { class: 'rvnav', 'aria-label': '翻看已定' },
-    h('a', { class: 'back', href: '/done', 'data-nav': true }, '← 已定列表'),
+    h('a', { class: 'back', href: S.doneHref || '/done', 'data-nav': true }, '← 已定列表'),
     h('button', { class: 'tx', type: 'button', disabled: i <= 0, onclick: () => rvStep(-1) }, '‹ 上一张'),
     h('span', { class: 'pos' }, i >= 0 ? `${i + 1} / ${n}` : ''),
     h('button', { class: 'tx', type: 'button', disabled: i < 0 || i >= n - 1, onclick: () => rvStep(1) }, '下一张 ›'),
@@ -855,6 +966,7 @@ function rvActs(c, ctx) {
   if (S.note && S.note.id === c.id && S.note.oid === '__redo') return redoNoteEl(c, ctx);
   return h('div', { class: 'acts rv-acts' },
     h('span', { class: 'chats' }, h('button', { class: 'chat', type: 'button', title: '把这张放回待定队列，重新选一次', onclick: () => reopenCard(c) }, '撤回重定')),
+    micBtn(voNote(c, '__redo', cur => redoOpen(cur, ctx)), '说返修意见：按住说话，松开变成文字', 'big'),
     h('button', { class: 'b no', type: 'button', title: '写哪里要改，交回推这张卡的 Claude 会话（按 R）', onclick: () => redoOpen(c, ctx) }, '返修'));
 }
 function rvRefreshActs(c, ctx) {
@@ -868,6 +980,7 @@ function redoOpen(c, ctx) {
 }
 function redoNoteEl(c, ctx) {
   const ta = h('textarea', { class: 'note', rows: 2, placeholder: '哪里要改？写清楚改哪、改成什么样', 'aria-label': '返修意见' });
+  ta._cid = c.id;
   ta.value = S.note.text || '';
   ta.addEventListener('input', () => { if (S.note) S.note.text = ta.value; });
   const btn = h('button', { class: 'b no', type: 'button' }, '提交返修');
@@ -890,10 +1003,11 @@ function redoNoteEl(c, ctx) {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); send(); }
     else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); cancel(); }
   });
-  setTimeout(() => { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }, 30);
+  noteFocus(ta);
   return h('div', { class: 'acts noting' }, h('div', { class: 'nfor' }, h('b', null, '返修'), c.session ? ' · 交回推这张卡的 Claude 会话' : ' · 这张没绑会话，只记在板上'), ta,
     h('div', { class: 'nbtns' },
       h('span', { class: 'nh' }, '回车提交 · Shift + 回车换行 · Esc 取消'),
+      micBtn(voNote(c, '__redo', () => {}), '接着说：按住说话，松开把字接在后面'),
       h('button', { class: 'tx', type: 'button', onclick: cancel }, '取消'), btn));
 }
 function rvStep(d) {
@@ -905,7 +1019,7 @@ function rvStep(d) {
 function rvKey(e) {
   const c = rvCard(S.route.id);
   if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { e.preventDefault(); rvStep(e.key === 'ArrowRight' ? 1 : -1); }
-  else if (e.key === 'Escape') { e.preventDefault(); go('/done'); }
+  else if (e.key === 'Escape') { e.preventDefault(); go(S.doneHref || '/done'); }
   else if ((e.key === 'r' || e.key === 'R') && c) { e.preventDefault(); redoOpen(c, $('#main')._ctx); }
   else if ((e.key === 'o' || e.key === ' ') && c && (c.media || []).length) { e.preventDefault(); openLb(c, 0, $('#main')._ctx); }
 }
@@ -1079,6 +1193,7 @@ document.addEventListener('keydown', e => {
   if (e.target.matches('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === '?') { location.href = '/help'; return; }
   if (S.route?.type === 'review') return rvKey(e);
+  if (S.route?.type === 'done' && e.key === '/') { const i = $('#main .sq'); if (i) { e.preventDefault(); i.focus(); } return; }
   const ctx = activeCtx(); if (!ctx) return;
   const c = curCard(ctx).c;
   const dg = (e.code || '').match(/^(?:Digit|Numpad)([1-9])$/);
@@ -1272,3 +1387,169 @@ $('#lb').addEventListener('click', e => {
 render();
 loadState().then(() => setConn('live')).catch(e => { $('#main').replaceChildren(h('section', { class: 'focus' }, h('div', { class: 'empty' }, h('h2', null, '载入失败'), h('p', null, e.message)))); setConn('down'); });
 pollLoop();
+
+/* ---------- 按住说话（10-21 用户定）：录音交给服务器配置的转写服务（不留录音），文字填进意见框，不自动提交 ---------- */
+const VO = { rec: null, stream: null, chunks: [], t0: 0, timer: null, mode: '', btn: null, deliver: null, busy: false, cancel: false };
+const canVoice = () => S.voice && !!window.MediaRecorder && !!navigator.mediaDevices?.getUserMedia;
+function micBtn(deliver, title, cls) {
+  if (!canVoice()) return null;
+  const b = h('button', { class: 'mic' + (cls ? ' ' + cls : ''), type: 'button', title: title || '按住说话，松开变成文字（点一下开始、再点一下结束也行）', 'aria-label': '语音输入' },
+    h('span', { class: 'mic-i', 'aria-hidden': 'true' }));
+  b.addEventListener('pointerdown', e => { if (e.button) return; e.preventDefault(); e.stopPropagation(); voPress(b, deliver); });
+  b.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); if (e.detail === 0) voPress(b, deliver, true); });  // 键盘回车 / 空格：当成点一下
+  b.addEventListener('contextmenu', e => e.preventDefault());
+  return b;
+}
+// 按住超过 0.35 秒算「按住说话」，松开就结束；点一下算「开始」，再点一下或点浮条上的「说完了」结束；最长 60 秒
+async function voPress(btn, deliver, tap) {
+  if (VO.busy) return;
+  if (VO.rec || VO.btn) { if (VO.mode === 'toggle') voStop(); return; }
+  VO.btn = btn; VO.deliver = deliver; VO.mode = tap ? 'toggle' : 'hold'; VO.pressAt = Date.now(); VO.cancel = false;
+  const up = () => {
+    window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', up);
+    if (VO.mode !== 'hold') return;
+    if (!VO.rec || Date.now() - VO.pressAt < 350) VO.mode = 'toggle'; else voStop();
+  };
+  if (!tap) { window.addEventListener('pointerup', up); window.addEventListener('pointercancel', up); }
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
+  catch (e) {
+    up(); VO.btn = null; VO.mode = '';
+    return toast(e.name === 'NotAllowedError' ? '没拿到话筒权限：在浏览器里允许使用麦克风后再按' : '打不开话筒：' + (e.message || e.name));
+  }
+  if (VO.btn !== btn || VO.cancel) { stream.getTracks().forEach(t => t.stop()); VO.btn = null; VO.mode = ''; return; }
+  const mime = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/ogg;codecs=opus', 'audio/webm'].find(m => MediaRecorder.isTypeSupported?.(m)) || '';
+  let rec;
+  try { rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); }
+  catch (e) { stream.getTracks().forEach(t => t.stop()); VO.btn = null; VO.mode = ''; return toast('这个浏览器录不了音：' + (e.message || e.name)); }
+  Object.assign(VO, { rec, stream, chunks: [], t0: Date.now() });
+  rec.ondataavailable = e => { if (e.data && e.data.size) VO.chunks.push(e.data); };
+  rec.onstop = () => voSend(rec.mimeType || mime || 'audio/webm');
+  rec.start(250);
+  btn.classList.add('on'); document.body.classList.add('voicing'); voPaint();
+  VO.timer = setInterval(() => { voPaint(); if (Date.now() - VO.t0 >= 60000) voStop(); }, 250);
+}
+function voStop(cancel) {
+  VO.cancel = !!cancel;
+  const rec = VO.rec;
+  if (!rec) { if (cancel) { VO.btn = null; VO.mode = ''; } return; }
+  clearInterval(VO.timer); VO.timer = null;
+  VO.btn?.classList.remove('on');
+  try { if (rec.state !== 'inactive') rec.stop(); else voSend(rec.mimeType || 'audio/webm'); } catch { voSend(rec.mimeType || 'audio/webm'); }
+  VO.stream?.getTracks().forEach(t => t.stop());
+}
+async function voSend(type) {
+  const blob = new Blob(VO.chunks, { type: type.split(';')[0] }), deliver = VO.deliver, dur = Date.now() - VO.t0;
+  Object.assign(VO, { rec: null, stream: null, chunks: [], mode: '' });
+  if (VO.cancel || dur < 600 || blob.size < 800) {
+    VO.btn = null; document.body.classList.remove('voicing');
+    if (!VO.cancel) toast('太短了：按住话筒说完再松开');
+    return;
+  }
+  VO.busy = true; voPaint();
+  try {
+    const r = await fetch('/api/voice', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': blob.type || 'audio/webm' }, body: blob });
+    if (r.status === 401) { location.reload(); return; }
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || '识别失败（' + r.status + '）');
+    const t = String(j.text || '').trim();
+    if (!t) toast('没听清，再说一次'); else deliver(t);
+  } catch (e) { toast(e.message || '识别失败'); }
+  finally { VO.busy = false; VO.btn = null; document.body.classList.remove('voicing'); voPaint(); }
+}
+function voPaint() {
+  let el = $('#vo');
+  if (!el) {
+    el = h('div', { id: 'vo', role: 'status', 'aria-live': 'polite' }, h('span', { class: 'dot' }), h('span', { class: 'vt' }),
+      h('button', { class: 'vdone', type: 'button', onclick: () => voStop() }, '说完了'), h('button', { class: 'vx', type: 'button', onclick: () => voStop(true) }, '取消'));
+    document.body.append(el);
+  }
+  el.classList.toggle('busy', VO.busy);
+  const s = Math.floor((Date.now() - VO.t0) / 1000);
+  $('.vt', el).textContent = VO.busy ? '识别中…' : `录音中 0:${pad(s)}${VO.mode === 'hold' ? ' · 松开结束' : ''}`;
+  $('.vdone', el).hidden = VO.busy || VO.mode !== 'toggle';
+  $('.vx', el).hidden = VO.busy;
+}
+window.addEventListener('keydown', e => { if (e.key === 'Escape' && (VO.rec || VO.btn) && !VO.busy) { e.preventDefault(); e.stopImmediatePropagation(); voStop(true); } }, true);
+// 识别出来的字接在已经写的意见后面；意见框还没开就先打开再填
+function voText(prev, t) { prev = String(prev || '').replace(/\s+$/, ''); return prev ? prev + (/[，。！？、,.!?;；:：]$/.test(prev) ? '' : '，') + t : t; }
+function voNote(c, oid, open) {
+  return t => {
+    const cur = rvCard(c.id) || c;
+    const mine = S.note && S.note.id === c.id;
+    const text = voText(mine ? S.note.text : '', t);
+    if (mine && S.note.oid === oid) {
+      S.note.text = text;
+      const ta = $$('textarea.note').find(x => x._cid === c.id);
+      if (ta) { ta.value = text; return; }
+    }
+    S.note = { id: c.id, text }; S.voQuiet = true;
+    open(cur);
+    if (!S.note || !S.note.oid) { S.note = null; S.voQuiet = false; toast('这张已经定了，写不了意见'); }
+  };
+}
+
+/* ---------- 「在对话里说」提醒（10-21 用户定）：板上点了在对话里说，那个会话 15 分钟没发消息，顶上红条 + 系统通知 ---------- */
+function chatDue() {
+  const now = Date.now() / 1000 - S.skew, wait = S.chatWait || 900;
+  return S.cards.filter(c => {
+    const a = c.answer || {};
+    if (c.status !== 'answered' || !a.chat || !a.wait || a.heard || !c.session) return false;
+    return now >= (a.remind_at || a.at + wait) && now - a.at < 43200;  // 超过半天的不提了
+  }).sort((a, b) => a.answer.at - b.answer.at);
+}
+function renderCw() {
+  let el = $('#cw');
+  if (!el) { el = h('div', { id: 'cw', role: 'alert', hidden: true }); $('#main').before(el); }
+  const due = S.loaded ? chatDue() : [];
+  el.hidden = !due.length;
+  if (!due.length) return el.replaceChildren();
+  const mins = Math.round((Date.now() / 1000 - S.skew - due[0].answer.at) / 60);
+  const groups = new Map();
+  due.forEach(c => { if (!groups.has(c.project)) groups.set(c.project, []); groups.get(c.project).push(c); });
+  el.replaceChildren(
+    h('div', { class: 'cw-t' }, h('b', null, `你说要在对话里说的 ${due.length} 张`), `，${mins} 分钟了还没在对话里说`),
+    h('div', { class: 'cw-l' }, [...groups].map(([slug, cs]) => h('span', { class: 'cw-p', style: `--pc:${pcol(slug)[0]}` }, pname(slug), ' ',
+      cs.map(c => h('a', { href: '/done/' + c.id, 'data-nav': true, title: c.title }, pad(c.seq)))))),
+    h('div', { class: 'cw-b' },
+      h('button', { class: 'b go', type: 'button', title: '这就去对话里说，不再提醒', onclick: () => cwAct(due, 'done') }, '我去说'),
+      h('button', { class: 'b', type: 'button', onclick: () => cwAct(due, 'snooze') }, '再等 15 分钟'),
+      h('button', { class: 'b', type: 'button', title: '这几张恢复待定，直接在板上点', onclick: () => cwBoard(due) }, '放回板上定')));
+  cwNotify(due, mins);
+}
+setInterval(() => { if (S.loaded) renderCw(); }, 30000);
+async function cwAct(due, act) {
+  try {
+    await api('/api/chatwait', { method: 'POST', body: { ids: due.map(c => c.id), act } });
+    toast(act === 'done' ? '好，这几张不再提醒' : '15 分钟后再提醒');
+    await loadState();
+  } catch (e) { toast('没记上：' + e.message); }
+}
+async function cwBoard(due) {
+  try {
+    for (const c of due) await api('/api/cards/' + c.id + '/reopen', { method: 'POST', body: {} });
+    S.cur['f:' + due[0].project] = due[0].id;
+    await loadState();
+    go('/p/' + due[0].project);
+    toast(`放回板上了 ${due.length} 张`);
+  } catch (e) { toast('没放回去：' + e.message); }
+}
+function askNotify() {
+  try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission()?.catch?.(() => {}); } catch {}
+}
+// 每张（每次顺延）只通知一次：多块屏 / 刷新都不重复
+function cwNotify(due, mins) {
+  let seen;
+  try { seen = new Set(JSON.parse(localStorage.getItem('decide-cw') || '[]')); } catch { seen = new Set(); }
+  const key = c => c.id + ':' + (c.answer.remind_at || c.answer.at);
+  const fresh = due.filter(c => !seen.has(key(c)));
+  if (!fresh.length) return;
+  fresh.forEach(c => seen.add(key(c)));
+  try { localStorage.setItem('decide-cw', JSON.stringify([...seen].slice(-300))); } catch {}
+  startFlash('● 该去对话里说了');
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  try {
+    const n = new Notification('该去对话里说了', { body: `${[...new Set(due.map(c => pname(c.project)))].join('、')}：${due.length} 张，${mins} 分钟了还没说`, tag: 'decide-cw' });
+    n.onclick = () => { window.focus(); n.close(); };
+  } catch {}
+}
