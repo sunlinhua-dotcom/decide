@@ -121,6 +121,8 @@ Cards land in the project `claude-allow`. If the board cannot be reached, nobody
 | `DECIDE_PASSWORD` | none | Optional web password for phones; without it, log in with the key |
 | `DECIDE_TRUST_PROXY` | `0` | `1` = use `CF-Connecting-IP` / `X-Forwarded-For` for login rate limiting |
 | `DECIDE_SERVE_STATIC` | `1` | `0` = your reverse proxy serves `web/` and media itself |
+| `DECIDE_ASR_URL` / `DECIDE_ASR_MODEL` | none / `whisper-1` | OpenAI-compatible `/v1/audio/transcriptions` endpoint for hold-to-talk; without it the mic buttons are hidden. Needs `ffmpeg` on the server (audio is converted to 16 kHz WAV, never stored) |
+| `DECIDE_LLM_URL` / `DECIDE_LLM_MODEL` / `DECIDE_LLM_KEY_FILE` | none | OpenAI-compatible `/chat/completions` endpoint for "search by meaning" on the decided list (Enter in the search box); the key is read from a file at request time. Only text summaries are sent. Without it, search is lexical + fuzzy only |
 
 **CLI and hooks** (environment variables, or `~/.config/decide/config.json`; see [`config.example.json`](config.example.json)):
 
@@ -278,6 +280,9 @@ bin/decide ask -p demo -t "T12 杯子特写 · 手柄朝右" --before old.jpg --
 
 - 服务端默认只听 `127.0.0.1:8796`，数据放 `./data`；对外用时设 `DECIDE_PUBLIC=https://你的域名`、`DECIDE_TRUST_PROXY=1`，再设一个 `DECIDE_PASSWORD` 方便手机登录。
 - 命令行默认连 `http://127.0.0.1:8796`；连远端服务就设 `DECIDE_BASE` 和 `DECIDE_KEY`，或写进 `~/.config/decide/config.json`。
+- **按住说话**：设 `DECIDE_ASR_URL`（OpenAI 兼容的 `/v1/audio/transcriptions`，如自建 Whisper / Qwen3-ASR）才显示话筒；服务器要有 `ffmpeg`，录音转成 16 kHz WAV 送去转写，不落盘。
+- **已定搜索**：边打边搜是本地的字面 + 模糊匹配；设了 `DECIDE_LLM_URL`、`DECIDE_LLM_MODEL`、`DECIDE_LLM_KEY_FILE`（OpenAI 兼容的 `/chat/completions`，key 放在 600 权限的文件里）后，搜索框里回车按意思找，只发文字摘要。
+- **在对话里说提醒**：板上点了「在对话里说」、那个 Claude 会话 15 分钟没发消息，板上顶部出红条并弹系统通知；`decide hook prompt` 钩子负责停表。
 - **派活入口**：`$DECIDE_HOME/intake.json` 存在才在顶栏出现（每次现读，路径可用 `DECIDE_INTAKE_CONF` 改）。写 `{"dir": "收件箱目录"}` 就每件落一个子目录（`item.json` + `files/`，写完才改名）；写 `{"gateway": "…", "token": "…", "capability": "route.intake"}` 就经任务网关的 `POST /v1/files`、`POST /v1/jobs` 交件。附件单个 95 MB 以内、一次最多 30 个；令牌只放服务器，权限给到最小。
 - **`@画面` 配图**：`DECIDE_GEN_CMD` 指向任何能出一张图的命令，`{prompt}` `{out}` `{w}` `{h}` 会被整体替换（不经过 shell）。多条命令一行一条（或在 `gen_cmd` 里写数组），它们从同一个队列抢活，谁空谁出；配图永远不挡卡片，没图的选项照样能选。
 

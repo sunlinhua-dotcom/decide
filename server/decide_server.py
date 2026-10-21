@@ -18,6 +18,11 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import difflib
+import math
+import subprocess
+import tempfile
+import unicodedata
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
@@ -38,6 +43,15 @@ COOKIE = "decide_k"
 COOKIE_MAX_AGE = 400 * 24 * 3600
 COOKIE_SECURE = os.environ.get("DECIDE_COOKIE_SECURE", "1" if PUBLIC_BASE.startswith("https://") else "0") == "1"
 MAX_UPLOAD = 300 * 1024 * 1024
+# 按住说话（10-21）：OpenAI 兼容的转写接口（/v1/audio/transcriptions），没配就不显示话筒
+ASR_URL = os.environ.get("DECIDE_ASR_URL", "")
+ASR_MODEL = os.environ.get("DECIDE_ASR_MODEL", "whisper-1")
+VOICE_MAX = 8 << 20
+CHAT_WAIT = 900  # 板上点「在对话里说」后，多久没在对话里说就提醒
+# 已定搜索「按意思找」（10-21）：OpenAI 兼容的对话接口；key 只从文件读，不进代码。没配就只有模糊搜索
+LLM_URL = os.environ.get("DECIDE_LLM_URL", "")
+LLM_MODEL = os.environ.get("DECIDE_LLM_MODEL", "")
+LLM_KEY_FILE = os.environ.get("DECIDE_LLM_KEY_FILE", "")
 PUBLIC_FILES = {"/icon.svg", "/icon-180.png", "/icon-512.png", "/manifest.webmanifest", "/robots.txt"}
 
 os.makedirs(HOME, exist_ok=True)
@@ -332,6 +346,187 @@ def card_json(r):
               "session": r["session"], "acked": bool(r["acked"]),
               "answer": json.loads(r["answer"]) if r["answer"] else None})
     return d
+
+
+# ---------------- 按住说话 ----------------
+def multipart(fields, files):
+    b = "----decide" + secrets.token_hex(8)
+    out = []
+    for k, v in fields.items():
+        out.append(f'--{b}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode())
+    for k, (name, ctype, data) in files.items():
+        out.append(f'--{b}\r\nContent-Disposition: form-data; name="{k}"; filename="{name}"\r\nContent-Type: {ctype}\r\n\r\n'.encode())
+        out.append(data + b"\r\n")
+    out.append(f"--{b}--\r\n".encode())
+    return b"".join(out), f"multipart/form-data; boundary={b}"
+
+
+def transcribe(raw, ctype):
+    """浏览器录的一段音（webm / mp4 / ogg）→ ffmpeg 转 16k 单声道 wav → 转写接口 → 文字。临时文件转完即删。"""
+    name, data = "voice.wav", None
+    with tempfile.TemporaryDirectory(prefix="decide-voice-") as td:
+        src, wav = os.path.join(td, "in"), os.path.join(td, "in.wav")
+        with open(src, "wb") as f:
+            f.write(raw)
+        try:
+            subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-y", "-i", src, "-t", "65", "-ar", "16000", "-ac", "1", wav],
+                           check=True, timeout=30, stdin=subprocess.DEVNULL, capture_output=True)
+            with open(wav, "rb") as f:
+                data = f.read()
+        except FileNotFoundError:  # 没装 ffmpeg：原样送，能不能认看转写服务
+            name, data = "voice." + (ctype.split("/")[-1].split(";")[0] or "webm"), raw
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            raise Bad(400, "这段录音读不了，再说一次")
+    body, ct = multipart({"model": ASR_MODEL, "response_format": "json"}, {"file": (name, "audio/wav" if name.endswith(".wav") else ctype, data)})
+    req = urllib.request.Request(ASR_URL, data=body, method="POST", headers={"Content-Type": ct})
+    try:
+        with urllib.request.urlopen(req, timeout=45) as r:
+            j = json.loads(r.read() or b"{}")
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        sys.stderr.write(f"ASR 失败：{e!r}\n")
+        raise Bad(502, "识别服务没响应，稍后再试")
+    return re.sub(r"^\s*language\s+[^<\n]*<asr_text>\s*", "", str(j.get("text") or ""), flags=re.I).strip()
+
+
+# ---------------- 已定搜索 ----------------
+CJK_RE = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]+")
+WORD_RE = re.compile(r"[a-z0-9]+(?:[._-][a-z0-9]+)*")
+SEARCH_CACHE = {}  # card id -> (rev, acked, doc)
+
+
+def norm(t):
+    return unicodedata.normalize("NFKC", str(t or "")).lower()
+
+
+def terms_of(t):
+    """中文切成两字一片（单字成词的保留单字），英文数字按词；用来比对和打分。"""
+    t = norm(t)
+    out = set(WORD_RE.findall(t))
+    for run in CJK_RE.findall(t):
+        out.update(run[i:i + 2] for i in range(len(run) - 1)) if len(run) > 1 else out.add(run)
+    return out
+
+
+def search_doc(r):
+    hit = SEARCH_CACHE.get(r["id"])
+    if hit and hit[0] == r["rev"] and hit[1] == r["acked"]:
+        return hit[2]
+    c = card_json(r)
+    a = c.get("answer") or {}
+    prev = a.get("prev") or {}
+    opts = c.get("options") or []
+    fields = {
+        "title": c.get("title") or "",
+        "answer": " ".join((a.get("labels") or []) + (prev.get("labels") or [])),
+        "note": " ".join(x for x in (a.get("note"), prev.get("note")) if x),
+        "opts": " ".join(f"{o.get('label', '')} {o.get('desc', '')}" for o in opts),
+        "project": c.get("project") or "",
+        "more": " ".join([c.get("sub") or ""] + [f"{k} {v}" for k, v in (c.get("facts") or []) if not str(k).startswith(("文件", "路径"))]
+                         + [l.get("t") or "" for l in (c.get("links") or [])]),
+    }
+    doc = {"c": c, "seq": c.get("seq") or 0, "f": {k: norm(v) for k, v in fields.items()},
+           "t": {k: terms_of(v) for k, v in fields.items()}}
+    doc["all"] = set().union(*doc["t"].values())
+    doc["words"] = {w for w in doc["all"] if w.isascii()}
+    SEARCH_CACHE[r["id"]] = (r["rev"], r["acked"], doc)
+    return doc
+
+
+FIELD_W = {"title": 3.0, "answer": 2.0, "note": 2.0, "project": 2.0, "opts": 1.4, "more": 1.0}
+
+
+def lexical(docs, q):
+    """模糊搜：两字片 + 英文词（拼错一两个字母也算）+ 整句命中加分 + 编号直达；按 idf 加权，新卡略靠前。"""
+    qn = norm(q).strip()
+    qt = terms_of(qn)
+    num = qn.lstrip("#").isdigit() and int(qn.lstrip("#"))
+    if not qt and not num:
+        return []
+    n = len(docs) or 1
+    df = {t: sum(1 for d in docs if t in d["all"]) for t in qt}
+    idf = {t: math.log(1 + n / (1 + df[t])) for t in qt}
+    now = time.time()
+    out = []
+    for d in docs:
+        score, hits = 0.0, set()
+        for t in qt:
+            best = 0.0
+            for k, ts in d["t"].items():
+                if t in ts:
+                    best = max(best, FIELD_W[k])
+            if not best and t.isascii() and len(t) >= 4 and not t.isdigit():
+                m = difflib.get_close_matches(t, d["words"], n=1, cutoff=0.8)
+                if m:
+                    best, t2 = 0.7, m[0]
+                    hits.add(t2)
+            if best:
+                score += best * idf[t]
+                hits.add(t)
+        cover = len([t for t in qt if t in hits or any(h for h in hits if h != t and t.isascii())]) / max(1, len(qt))
+        if num and d["seq"] == num:
+            score += 100
+        if len(qn) >= 2 and qn in d["f"]["title"]:
+            score += 6
+        if not score or (cover < 0.34 and not (num and d["seq"] == num)):
+            continue
+        score *= 0.5 + cover
+        score += 0.3 * max(0.0, 1 - (now - d["c"]["updated"]) / (90 * 86400))
+        out.append((score, d, sorted(hits, key=len, reverse=True)))
+    out.sort(key=lambda x: -x[0])
+    return out
+
+
+def llm_key():
+    if not (LLM_URL and LLM_MODEL and LLM_KEY_FILE):
+        return ""
+    try:
+        with open(LLM_KEY_FILE) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def llm_rank(docs, q):
+    """按意思找：把已定卡的目录（编号 | 项目 | 日期 | 标题 | 结论 | 意见摘要）连同问题交给对话模型，回最相关的编号。
+    目录按编号升序排在前、问题放最后，前缀稳定，服务商的上下文缓存能命中。只发文字摘要，不发图和视频。"""
+    key = llm_key()
+    if not key:
+        raise Bad(404, "按意思找没开")
+    cut = lambda t, k: re.sub(r"\s+", " ", str(t or ""))[:k]
+    lines = []
+    docs = sorted(docs, key=lambda d: d["seq"])[-1500:]  # 目录封顶，一次请求控制在几万 token 内
+    for d in docs:
+        c, a = d["c"], d["c"].get("answer") or {}
+        day = time.strftime("%m-%d", time.localtime(c["updated"]))
+        lines.append(f"{d['seq']}|{c['project']}|{day}|{cut(c.get('title'), 48)}|{cut('、'.join(a.get('labels') or []) or ('已撤销' if c['status'] == 'cancelled' else ''), 18)}|{cut(a.get('note'), 36)}")
+    sys_p = ("你是决策板的检索助手。下面是已经定过的卡片目录，每行：编号|项目|日期(月-日)|标题|结论|意见摘要。\n"
+             "用户会用口语描述想找的卡（可能是同义词、只记得大意、说「昨天」「上周」）。按意思判断，"
+             "从目录里挑出最相关的编号，从最相关到较相关排，最多 20 个；实在没有就回空数组。"
+             "只输出 JSON：{\"seqs\": [编号, ...]}。\n\n目录：\n" + "\n".join(lines))
+    user_p = f"今天是 {time.strftime('%Y-%m-%d')}。要找：{q}"
+    body = json.dumps({"model": LLM_MODEL, "messages": [{"role": "system", "content": sys_p}, {"role": "user", "content": user_p}],
+                       "temperature": 0, "max_tokens": 400, "response_format": {"type": "json_object"}}).encode()
+    req = urllib.request.Request(LLM_URL, data=body, method="POST",
+                                 headers={"Content-Type": "application/json", "Authorization": "Bearer " + key})
+    try:
+        with urllib.request.urlopen(req, timeout=40) as r:
+            j = json.loads(r.read())
+        txt = j["choices"][0]["message"].get("content") or ""
+        seqs = json.loads(re.search(r"\{.*\}", txt, re.S).group(0)).get("seqs") or []
+    except Exception as e:  # noqa: BLE001
+        sys.stderr.write(f"按意思找失败：{e!r}\n")
+        raise Bad(502, "按意思找没成功，先看模糊搜索的结果")
+    by = {d["seq"]: d for d in docs}
+    out, seen = [], set()
+    for x in seqs:
+        try:
+            x = int(x)
+        except (TypeError, ValueError):
+            continue
+        if x in by and x not in seen:
+            seen.add(x)
+            out.append(by[x])
+    return out
 
 
 def project_rows():
@@ -643,6 +838,10 @@ class H(BaseHTTPRequestHandler):
             return self.listen()
         if m == "POST" and p == ["chat"]:
             return self.to_chat()
+        if m == "POST" and p == ["heard"]:
+            return self.heard()
+        if m == "POST" and p == ["chatwait"]:
+            return self.chat_wait()
         if m == "POST" and p == ["ack"]:
             return self.ack()
         if m == "GET" and p == ["session"]:
@@ -653,6 +852,10 @@ class H(BaseHTTPRequestHandler):
             return self.intake_file()
         if m == "POST" and len(p) == 3 and p[0] == "intake" and IK_RE.match(p[1]) and p[2] == "retry":
             return self.intake_retry(p[1])
+        if m == "POST" and p == ["voice"]:
+            return self.voice()
+        if m == "GET" and p == ["search"]:
+            return self.search()
         if p == ["cards"]:
             return self.list_cards() if m == "GET" else self.create_card()
         if len(p) >= 2 and p[0] == "cards" and ID_RE.match(p[1]):
@@ -774,6 +977,7 @@ class H(BaseHTTPRequestHandler):
             done = db.execute("SELECT * FROM cards WHERE status!='pending' ORDER BY updated DESC LIMIT 400").fetchall()
             self.send(200, {"ver": VER[0], "now": time.time(), "projects": project_rows(),
                             "listeners": dict(LISTENERS), "intake": bool(intake_conf()),
+                            "chat_wait": CHAT_WAIT, "voice": bool(ASR_URL), "search_ai": bool(llm_key()),
                             "cards": [card_json(r) for r in pending + done]})
 
     def poll(self):
@@ -1033,8 +1237,11 @@ class H(BaseHTTPRequestHandler):
                 rows = db.execute("SELECT * FROM cards WHERE status='pending' AND session=? ORDER BY seq", (sess,)).fetchall()
             else:
                 raise Bad(400, "要给 ids 或 session")
-            ans = json.dumps({"choice": ["chat"], "labels": ["在对话里说"], "note": "", "at": now,
-                              "device": s(raw.get("device"), 80, "device"), "chat": True}, ensure_ascii=False)
+            # 板上点的才计时提醒（wait）；Claude 在对话里清卡（ack）说明用户已经在对话里说了
+            ans = {"choice": ["chat"], "labels": ["在对话里说"], "note": "", "at": now,
+                   "device": s(raw.get("device"), 80, "device"), "chat": True}
+            ans.update({"heard": now} if raw.get("ack") else {"wait": True})
+            ans = json.dumps(ans, ensure_ascii=False)
             for r in rows:
                 db.execute("UPDATE cards SET status='answered', answer=?, updated=?, rev=rev+1, acked=? WHERE id=?",
                            (ans, now, 1 if raw.get("ack") else 0, r["id"]))
@@ -1043,6 +1250,45 @@ class H(BaseHTTPRequestHandler):
             sessions = {r["session"] for r in rows if r["session"]}
             self.send(200, {"ids": [r["id"] for r in rows], "seqs": [r["seq"] for r in rows],
                             "listening": any(now - LISTENERS.get(x, 0) < 75 for x in sessions)})
+
+    def chat_mark(self, rows, act):
+        """「在对话里说」的卡：heard = 用户在对话里说了（停表）；snooze = 再等 CHAT_WAIT 秒再提醒。"""
+        now, n = time.time(), 0
+        for r in rows:
+            a = json.loads(r["answer"]) if r["answer"] else {}
+            if r["status"] != "answered" or not a.get("chat") or not a.get("wait") or a.get("heard"):
+                continue
+            if act == "snooze":
+                a["remind_at"] = now + CHAT_WAIT
+            else:
+                a["heard"] = now
+            db.execute("UPDATE cards SET answer=? WHERE id=?", (json.dumps(a, ensure_ascii=False), r["id"]))
+            n += 1
+        if n:
+            bump()
+        return n
+
+    def heard(self):
+        """prompt 钩子报上来：用户在这个会话里发了消息，这个会话「在对话里说」的卡全部停表。"""
+        raw = self.body_json()
+        sess = raw.get("session") if isinstance(raw.get("session"), str) else ""
+        if not sess:
+            raise Bad(400, "要给 session")
+        with lock:
+            rows = db.execute("SELECT * FROM cards WHERE session=? AND status='answered' AND answer LIKE ?",
+                              (sess, '%"wait": true%')).fetchall()
+            self.send(200, {"heard": self.chat_mark(rows, "heard")})
+
+    def chat_wait(self):
+        """板上提醒条的按钮：done = 我去说（停表），snooze = 再等 15 分钟。"""
+        raw = self.body_json()
+        ids = [i for i in (raw.get("ids") or []) if isinstance(i, str) and ID_RE.match(i)]
+        act = raw.get("act")
+        if not ids or act not in ("done", "snooze"):
+            raise Bad(400, "要给 ids 和 act（done / snooze）")
+        with lock:
+            rows = db.execute("SELECT * FROM cards WHERE id IN (%s)" % ",".join("?" * len(ids)), ids).fetchall()
+            self.send(200, {"n": self.chat_mark(rows, act), "wait": CHAT_WAIT})
 
     def upsert_project(self):
         raw = self.body_json()
@@ -1089,6 +1335,38 @@ class H(BaseHTTPRequestHandler):
             rows = db.execute("SELECT * FROM intakes ORDER BY created DESC LIMIT 20").fetchall()
         self.send(200, {"enabled": bool(c), "via": ("gateway" if c.get("gateway") else "dir") if c else "",
                         "max_bytes": INTAKE_MAX, "max_files": INTAKE_FILES, "recent": [intake_json(r) for r in rows]})
+
+    def voice(self):
+        if not ASR_URL:
+            raise Bad(404, "语音识别没开")
+        n = int(self.headers.get("Content-Length") or 0)
+        if n <= 0:
+            raise Bad(400, "录音是空的")
+        if n > VOICE_MAX:
+            raise Bad(413, "录音太长了，一次说一分钟以内")
+        raw = b""
+        while len(raw) < n:
+            chunk = self.rfile.read(min(n - len(raw), 1 << 20))
+            if not chunk:
+                raise Bad(400, "上传中断")
+            raw += chunk
+        self.send(200, {"text": transcribe(raw, self.headers.get("Content-Type") or "audio/webm")})
+
+    def search(self):
+        q = self.q()
+        text = (q.get("q") or "").strip()[:200]
+        limit = min(max(int(q.get("limit") or 60), 1), 200)
+        with lock:
+            rows = db.execute("SELECT * FROM cards WHERE status!='pending' ORDER BY updated DESC LIMIT 3000").fetchall()
+            docs = [search_doc(r) for r in rows]
+        if not text:
+            return self.send(200, {"q": text, "ai": False, "cards": []})
+        if q.get("ai") == "1":
+            got = llm_rank(docs, text)
+            return self.send(200, {"q": text, "ai": True, "cards": [dict(d["c"], hits=[]) for d in got[:limit]]})
+        got = lexical(docs, text)
+        self.send(200, {"q": text, "ai": False, "total": len(got),
+                        "cards": [dict(d["c"], hits=h[:12]) for _, d, h in got[:limit]]})
 
     def intake_file(self):
         if not intake_conf():
