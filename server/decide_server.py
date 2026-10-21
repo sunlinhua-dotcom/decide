@@ -107,6 +107,7 @@ CREATE TABLE IF NOT EXISTS intakes(
   id TEXT PRIMARY KEY, created REAL NOT NULL, updated REAL NOT NULL, status TEXT NOT NULL,
   text TEXT NOT NULL DEFAULT '', chat TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
   files TEXT NOT NULL DEFAULT '[]', ref TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS prompts(session TEXT PRIMARY KEY, at REAL NOT NULL);
 """)
 cols = {r["name"] for r in db.execute("PRAGMA table_info(cards)")}
 for col, ddl in (("seq", "INTEGER"), ("session", "TEXT NOT NULL DEFAULT ''"), ("acked", "INTEGER NOT NULL DEFAULT 0"),
@@ -1243,18 +1244,27 @@ class H(BaseHTTPRequestHandler):
                 rows = db.execute("SELECT * FROM cards WHERE status='pending' AND session=? ORDER BY seq", (sess,)).fetchall()
             else:
                 raise Bad(400, "要给 ids 或 session")
-            # 板上点的才计时提醒（wait）；Claude 在对话里清卡（ack）说明用户已经在对话里说了
-            ans = {"choice": ["chat"], "labels": ["在对话里说"], "note": "", "at": now,
-                   "device": s(raw.get("device"), 80, "device"), "chat": True}
-            ans.update({"heard": now} if raw.get("ack") else {"wait": True})
-            ans = json.dumps(ans, ensure_ascii=False)
+            # 板上点的才计时提醒（wait）；Claude 在对话里清卡（ack）说明用户已经在对话里说了。
+            # 卡片弹出后用户在那个会话里发过消息（prompt 钩子记的时间），也算已经说了，不计时
+            said = []
             for r in rows:
+                ans = {"choice": ["chat"], "labels": ["在对话里说"], "note": "", "at": now,
+                       "device": s(raw.get("device"), 80, "device"), "chat": True}
+                p = None if raw.get("ack") or not r["session"] else \
+                    db.execute("SELECT at FROM prompts WHERE session=?", (r["session"],)).fetchone()
+                if raw.get("ack"):
+                    ans["heard"] = now
+                elif p and p["at"] >= r["created"]:
+                    ans.update({"heard": now, "said": p["at"]})
+                    said.append(r["seq"])
+                else:
+                    ans["wait"] = True
                 db.execute("UPDATE cards SET status='answered', answer=?, updated=?, rev=rev+1, acked=? WHERE id=?",
-                           (ans, now, 1 if raw.get("ack") else 0, r["id"]))
+                           (json.dumps(ans, ensure_ascii=False), now, 1 if raw.get("ack") else 0, r["id"]))
             if rows:
                 bump()
             sessions = {r["session"] for r in rows if r["session"]}
-            self.send(200, {"ids": [r["id"] for r in rows], "seqs": [r["seq"] for r in rows],
+            self.send(200, {"ids": [r["id"] for r in rows], "seqs": [r["seq"] for r in rows], "said": said,
                             "listening": any(now - LISTENERS.get(x, 0) < 75 for x in sessions)})
 
     def chat_mark(self, rows, act):
@@ -1281,9 +1291,12 @@ class H(BaseHTTPRequestHandler):
         if not sess:
             raise Bad(400, "要给 session")
         with lock:
+            db.execute("INSERT OR REPLACE INTO prompts(session, at) VALUES(?,?)", (sess, time.time()))
             rows = db.execute("SELECT * FROM cards WHERE session=? AND status='answered' AND answer LIKE ?",
                               (sess, '%"wait": true%')).fetchall()
-            self.send(200, {"heard": self.chat_mark(rows, "heard")})
+            n = self.chat_mark(rows, "heard")
+            db.commit()
+            self.send(200, {"heard": n})
 
     def chat_wait(self):
         """板上提醒条的按钮：done = 我去说（停表），snooze = 再等 15 分钟。"""
