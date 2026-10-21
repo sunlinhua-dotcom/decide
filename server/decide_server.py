@@ -660,7 +660,7 @@ class H(BaseHTTPRequestHandler):
             if len(p) == 2 and m == "GET":
                 with lock:
                     return self.send(200, card_json(get_card(cid)))
-            if len(p) == 3 and m == "POST" and p[2] in ("answer", "reopen", "cancel"):
+            if len(p) == 3 and m == "POST" and p[2] in ("answer", "reopen", "cancel", "redo"):
                 return self.card_action(cid, p[2])
             if len(p) == 3 and m == "POST" and p[2] == "pic":
                 return self.set_pic(cid)
@@ -933,6 +933,23 @@ class H(BaseHTTPRequestHandler):
                     raise Bad(409, "授权卡答完 Claude 就继续了，撤回不了")
                 db.execute("UPDATE cards SET status='pending', answer=NULL, updated=?, rev=rev+1, acked=0 WHERE id=?",
                            (now, cid))
+            elif act == "redo":
+                # 已定历史里点「返修」（10-21）：卡记成「返修 + 意见」，原答案留底，重新交给推卡的会话
+                if r["status"] == "pending":
+                    raise Bad(409, "这张卡还在待定，直接在板上定")
+                if spec.get("kind") == "perm":
+                    raise Bad(409, "授权卡答完 Claude 就继续了，返修不了")
+                note = s(raw.get("note"), 4000, "note").strip()
+                if not note:
+                    raise Bad(400, "返修要写哪里要改")
+                old = json.loads(r["answer"]) if r["answer"] else {}
+                # 只留上一次的答案，不套娃：连着返修两次，prev 是上一次返修
+                prev = {k: old[k] for k in ("choice", "labels", "note", "at") if k in old} or None
+                ans = {"choice": ["redo"], "labels": ["返修"], "note": note, "at": now,
+                       "device": s(raw.get("device"), 80, "device"), "redo": True,
+                       "prev": prev, "prev_status": r["status"]}
+                db.execute("UPDATE cards SET status='answered', answer=?, updated=?, rev=rev+1, acked=0 WHERE id=?",
+                           (json.dumps(ans, ensure_ascii=False), now, cid))
             else:
                 if r["status"] != "pending":
                     raise Bad(409, "只能撤销待定的卡")

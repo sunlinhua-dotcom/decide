@@ -957,6 +957,11 @@ def fmt_card(c):
     t = time.strftime("%H:%M", time.localtime(a.get("at") or c["updated"]))
     note = ("  ｜意见：" + " / ".join(x.strip() for x in a["note"].splitlines() if x.strip())) if a.get("note") else ""
     dev = f"{a.get('device')} · " if a.get("device") else ""
+    if a.get("redo"):  # 已定历史里点了「返修」：带上原来选的，接收方才知道改的是哪一版
+        p = a.get("prev") or {}
+        was = "、".join(p.get("labels") or p.get("choice") or []) or ("已撤销" if a.get("prev_status") == "cancelled" else "")
+        note += f"  ｜原来选的：{was}" if was else ""
+        return f"{head}  返修  {c['title']}  →  {labels}{note}  （{dev}{t}）"
     return f"{head}  已定  {c['title']}  →  {labels}{note}  （{dev}{t}）"
 
 
