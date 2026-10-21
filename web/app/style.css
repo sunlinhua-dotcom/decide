@@ -78,7 +78,7 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
   .qstage.side .tilew.has-rv > .tile { padding-bottom: 44px; }
   .qstage.side .tilew > .rvg { right: 14px; bottom: 10px; }
   .qstage.side .tilew > .rvg .rv { padding: 5px 11px; font-size: 12px; }
-  .qstage.side .tilew > .rvg .mic { height: 25px; min-width: 25px; }
+  .qstage.side .tilew > .rvg .mic { height: 25px; min-width: 25px; font-size: 12px; }
   .qstage.side .tile-t { font-size: 19px; }
   .qstage.side .tile-d { font-size: 13px; line-height: 1.55; }
   .qstage.side .tile-pic, .qstage.side .tile-pic.fit, .qstage.side .tile-pic.fit img { max-height: var(--picmax, 46vh); }
@@ -432,10 +432,10 @@ pre code { white-space: pre; }
   .qstage:not(.has-fig):not(.pics) .tile-d { font-size: 13.5px; }
   /* 「要改…」挪到右下角和说明同一行，不再单独占一截高度 */
   .qstage:not(.has-fig):not(.pics) .tilew.has-rv > .tile { padding-bottom: 14px; padding-right: 100px; }
-  .qstage:not(.has-fig):not(.pics) .tilew.has-rv.has-mic > .tile { padding-right: 138px; }
+  .qstage:not(.has-fig):not(.pics) .tilew.has-rv.has-mic > .tile { padding-right: 190px; }
   .qstage:not(.has-fig):not(.pics) .tilew > .rvg { right: 16px; bottom: 14px; }
   .qstage:not(.has-fig):not(.pics) .tilew > .rvg .rv { padding: 5px 11px; font-size: 12px; }
-  .qstage:not(.has-fig):not(.pics) .tilew > .rvg .mic { height: 25px; min-width: 25px; }
+  .qstage:not(.has-fig):not(.pics) .tilew > .rvg .mic { height: 25px; min-width: 25px; font-size: 12px; }
   .qstage:not(.has-fig):not(.pics) .tilew.slim > .tile { padding: 10px 20px; }
 }
 /* 多选：每张卡左上角一个勾选框，选项下面一条「已选 N 项 · 确定」 */
@@ -625,20 +625,36 @@ pre code { white-space: pre; }
 .mic-i { width: 15px; height: 15px; flex: none; background: currentColor; -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-2.08A7 7 0 0 0 19 12h-2z'/></svg>") center / contain no-repeat; mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-2.08A7 7 0 0 0 19 12h-2z'/></svg>") center / contain no-repeat; }
 .mic:hover, .mic.on { color: var(--red); border-color: var(--red); }
 .mic.on { background: var(--red-soft); }
-.cap .cap-mic { height: 24px; min-width: 24px; padding: 0 5px; margin-left: 4px; }
-.cap .cap-mic .mic-i { width: 13px; height: 13px; }
 .acts .mic.big { height: 46px; min-width: 46px; padding: 0 14px; }
 .acts .chats .mic { height: 26px; min-width: 26px; padding: 0 6px; }
 .nbtns .mic { margin-right: 4px; }
 .chats .cw { display: inline-flex; align-items: center; gap: 6px; }
-#vo { position: fixed; left: 50%; top: calc(var(--bar-h) + 14px); transform: translateX(-50%); z-index: 80; display: none; align-items: center; gap: 10px; padding: 9px 18px; border-radius: 999px; background: var(--ink); color: #fff; font-size: 14px; box-shadow: 0 10px 30px rgba(0, 0, 0, .18); white-space: nowrap; }
+/* 录音面板（10-21 v51 用户定）：一按下就出来，看得出在听（红点 + 计时 + 音量条），怎么结束写在上面；手机上从底部升起，电脑上贴在话筒旁 */
+#vo { position: fixed; z-index: 80; display: none; flex-direction: column; gap: 10px; left: var(--vx, 50%); top: var(--vy, 80px); width: 320px; padding: 16px 18px 14px; border-radius: 18px; background: var(--ink); color: #fff; box-shadow: 0 16px 40px rgba(0, 0, 0, .25); }
 body.voicing #vo { display: flex; }
-#vo .dot { width: 10px; height: 10px; border-radius: 50%; background: #ff4d3a; animation: vopulse 1s ease-in-out infinite; }
+#vo .vo-h { display: flex; align-items: center; gap: 10px; font-size: 17px; }
+#vo .dot { width: 12px; height: 12px; border-radius: 50%; background: #ff4d3a; animation: vopulse 1s ease-in-out infinite; flex: none; }
 #vo.busy .dot { background: #f2b705; animation: none; }
-#vo button { color: #fff; text-decoration: underline; text-underline-offset: 4px; font-size: 13px; }
+#vo .vs { margin-left: auto; font-variant-numeric: tabular-nums; color: #ccc; }
+#vo .vlv { height: 10px; border-radius: 5px; background: rgba(255, 255, 255, .15); overflow: hidden; }
+#vo .vlv i { display: block; height: 100%; background: #f2b705; transform-origin: left center; transform: scaleX(.04); transition: transform 80ms linear; }
+#vo .vhint { font-size: 13px; color: #bbb; }
+#vo .vdone { height: 46px; border-radius: 23px; background: var(--red); color: #fff; font-size: 17px; font-weight: 600; }
+#vo .vx { align-self: center; font-size: 13px; color: #aaa; text-decoration: underline; text-underline-offset: 3px; padding: 2px 10px; }
+#vo [hidden] { display: none; }
 @keyframes vopulse { 50% { opacity: .25; } }
-@media (prefers-reduced-motion: reduce) { #vo .dot { animation: none; } }
-@media (max-width: 760px) { .acts .mic.big { height: 52px; min-width: 52px; flex: none; } #vo { top: 12px; } }
+@media (prefers-reduced-motion: reduce) { #vo .dot { animation: none; } #vo .vlv i { transition: none; } }
+@media (max-width: 760px) {
+  .acts .mic.big { height: 52px; min-width: 52px; flex: none; }
+  #vo { left: 0; right: 0; top: auto; bottom: 0; width: auto; border-radius: 22px 22px 0 0; padding: 18px 20px calc(16px + env(safe-area-inset-bottom)); }
+  #vo .vo-h { font-size: 19px; }
+  #vo .vdone { height: 56px; font-size: 19px; }
+  #vo .vx { font-size: 15px; padding: 6px 14px; }
+}
+.mic-l { font-size: 13px; }
+.note.flash { animation: noteflash 1.2s ease-out; }
+@keyframes noteflash { 0% { box-shadow: 0 0 0 4px #fde68a; background: #fffbe6; } 100% { box-shadow: 0 0 0 0 transparent; } }
+@media (max-width: 760px) { .tilew > .rvg .mic, .acts .chats .mic, .nbtns .mic { height: 40px; min-width: 40px; padding: 0 12px; } }
 
 /* 已定搜索（10-21）：边打边搜，回车按意思找（对话模型） */
 .dhead { display: flex; align-items: center; gap: 20px; margin-bottom: 10px; flex-wrap: wrap; }
