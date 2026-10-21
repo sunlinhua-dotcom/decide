@@ -131,6 +131,8 @@ function parseRoute() {
   const q = new URLSearchParams(location.search);
   if (p === '/grid') return { type: 'grid', slugs: (q.get('p') || '').split(',').filter(Boolean).slice(0, 4) };
   if (p === '/done') return { type: 'done' };
+  const d = p.match(/^\/done\/([a-z0-9]{4,16})$/);
+  if (d) return { type: 'review', id: d[1] };
   if (p === '/paihuo') return { type: 'paihuo' };
   const m = p.match(/^\/p\/([a-z0-9-]+)$/);
   return { type: 'focus', slug: m ? m[1] : null };
@@ -153,7 +155,7 @@ function render() {
   renderBar(r);
   const main = $('#main');
   if (!S.loaded) return;
-  const key = r.type + ':' + (r.slug || (r.slugs || []).join(','));
+  const key = r.type + ':' + (r.slug || r.id || (r.slugs || []).join(','));
   if (main.dataset.view !== key) { main.replaceChildren(); main.dataset.view = key; main._ui = null; main._q = null; }
   if (r.type === 'focus') {
     const k = 'f:' + (r.slug || '');
@@ -162,6 +164,7 @@ function render() {
   }
   else if (r.type === 'grid') renderGrid(main, r.slugs);
   else if (r.type === 'paihuo') return renderPaihuo(main);
+  else if (r.type === 'review') renderReview(main, r.id);
   else renderDone(main);
   const n = r.type === 'focus' ? queue(r.slug).length : r.type === 'grid' ? r.slugs.reduce((s, x) => s + queue(x).length, 0) : queue(null).length;
   baseTitle = (n ? `(${n}) ` : '') + (r.type === 'focus' && r.slug ? pname(r.slug) + ' · ' : '') + 'decide';
@@ -177,7 +180,7 @@ function renderBar(r) {
     ps.map(p => tab('/p/' + p.slug, p.name, queue(p.slug).length, r.type === 'focus' && r.slug === p.slug))));
   const left = r.type === 'focus' ? queue(r.slug).length : 0;
   $('#left').replaceChildren(...(r.type === 'focus' && left ? ['还剩', h('span', { class: 'n' }, left)] : []));
-  $$('.right a[data-k]').forEach(a => a.classList.toggle('on', a.dataset.k === r.type));
+  $$('.right a[data-k]').forEach(a => a.classList.toggle('on', a.dataset.k === (r.type === 'review' ? 'done' : r.type)));
 }
 
 /* ---------- 一次一张 ---------- */
@@ -226,7 +229,7 @@ function guardFigs(host, ctx, o, c) {
       return r.width > 0 && (ready || r.height > 0) && Math.min(r.width, r.height) < min;
     });
     if (!small || (c.options || []).some(x => x.media != null)) return;
-    S.wide.add(c.id); ui.rev = null; renderFocus(host, ctx, o);
+    S.wide.add(c.id); ui.rev = null; ctx.review ? render() : renderFocus(host, ctx, o);
   };
   setTimeout(check, 500); setTimeout(check, 1600);
 }
@@ -288,6 +291,7 @@ function reviseBtn(c, x, ctx, cls) {
 function tilesEl(c, ctx) {
   const opts = c.options || [], sel = S.multi.get(c.id) || new Set();
   const noting = S.note && S.note.id === c.id ? S.note.oid : null;
+  const mine = mineOf(c);
   // 带图的选项排一行（最多 3 列），没图的（如「要改」）单独占一整行、排在下面，不和图卡抢格子
   const pics = hasPics(c), pn = Math.min(3, opts.filter(x => optPic(c, x) || x.gen).length) || 1;
   // 纯文字题：「要改」这类兜底项压成底下一条，正经选项按条数排满，不留空格子（401：4 句 + 要改 曾排成 3+2）
@@ -298,10 +302,10 @@ function tilesEl(c, ctx) {
   return h('div', { class: 'tiles', style: `--n:${cols};--pn:${pn}`, role: 'group', 'aria-label': '选项' }, opts.map((x, i) => {
     const rv = canRevise(c, x);
     return h('div', { class: 'tilew' + (rv ? ' has-rv' : '') + (pics && !(optPic(c, x) || x.gen) ? ' nopic' : '') + (slim(x) ? ' slim' : '') },
-      h('button', { class: 'tile' + (x.style === 'good' ? ' go' : x.style === 'bad' ? ' no' : '') + (x.rec ? ' rec' : '') + (sel.has(x.id) || noting === x.id ? ' sel' : ''),
+      h('button', { class: 'tile' + (x.style === 'good' ? ' go' : x.style === 'bad' ? ' no' : '') + (x.rec ? ' rec' : '') + (sel.has(x.id) || noting === x.id || mine.ids.has(x.id) ? ' sel' : ''),
         type: 'button', 'data-oid': x.id, title: i < 9 ? '按 ' + (i + 1) + (rv ? '；Shift + ' + (i + 1) + ' 选它并写意见' : '') : '', onclick: () => choose(c, x.id, ctx) },
         optPic(c, x) || x.gen ? picEl(c, x, ctx) : null,
-        h('span', { class: 'tile-k' }, c.multi ? h('span', { class: 'tile-ck', 'aria-hidden': 'true' }) : null, i < 9 ? String(i + 1) : ''),
+        h('span', { class: 'tile-k' }, c.multi ? h('span', { class: 'tile-ck', 'aria-hidden': 'true' }) : null, i < 9 ? String(i + 1) : '', mine.ids.has(x.id) ? h('span', { class: 'mine' }, mine.tag) : null),
         x.rec ? h('span', { class: 'tile-tag' }, '推荐') : null,
         h('span', { class: 'tile-t' }, hl(x.label)),
         x.desc ? h('span', { class: 'tile-d' }, hl(x.desc)) : null),
@@ -475,10 +479,11 @@ function mediaStage(c, ctx, o, only) {
     const cap = h('div', { class: 'cap' + (txt ? ' txt' : '') },
       opt ? h('span', { class: 'lt' + (opt.label.length > 3 ? ' long' : '') }, hl(opt.label)) : (isBroken(m.label) ? h('i', { class: 'dot' }) : null),
       opt && opt.rec ? h('span', { class: 'rec' }, '推荐') : null,
+      opt && mineOf(c).ids.has(opt.id) ? h('span', { class: 'mine' }, mineOf(c).tag) : null,
       h('span', { class: 'ct', title: txt || null }, hl(txt)),
       m.kind === 'video' ? h('button', { class: 'zoom', type: 'button', onclick: () => openLb(c, i, ctx) }, '放大') : null,
       opt && canRevise(c, opt) ? reviseBtn(c, opt, ctx, 'rv cap-rv') : null);
-    st.append(h('figure', { class: 'fig' + (opt ? ' pick' : '') + (opt && opt.rec ? ' rec' : '') }, frame, cap));
+    st.append(h('figure', { class: 'fig' + (opt ? ' pick' : '') + (opt && opt.rec ? ' rec' : '') + (opt && mineOf(c).ids.has(opt.id) ? ' mine' : '') }, frame, cap));
   });
   let x0 = null, y0 = null;
   st.addEventListener('touchstart', e => { if (e.touches.length === 1) { x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; } }, { passive: true });
@@ -508,8 +513,9 @@ function infoEl(c, ctx, o) {
       // 长标题在手机上字号小一档：三位数编号挤窄了标题列，40 字的标题会折成四行（441）
       h('h1', { class: [...(c.title || '')].length > 30 ? 'long' : null }, hl(c.title)),
       c.sub ? h('p', null, hl(c.sub)) : null,
-      o.compact ? null : linksEl(c)),
-    actsEl(c, ctx));
+      o.compact ? null : linksEl(c),
+      o.review ? rvAnsEl(c) : null),
+    o.review ? rvActs(c, ctx) : actsEl(c, ctx));
 }
 
 // 完成卡里做完的站点、版本页：图里写的网址点不了，单独排一行可点的链接（450）
@@ -571,6 +577,7 @@ function railEl(q, ctx) {
 }
 
 function step(ctx, d) {
+  if (ctx.review) return rvStep(d);
   const q = queue(ctx.slug);
   if (q.length < 2) return;
   const i = q.findIndex(c => c.id === S.cur[ctx.key]);
@@ -748,32 +755,159 @@ function renderGrid(main, slugs) {
 }
 
 /* ---------- 已定 ---------- */
+const doneList = () => S.cards.filter(c => c.status !== 'pending').sort((a, b) => b.updated - a.updated).slice(0, 200);
 function renderDone(main) {
-  const done = S.cards.filter(c => c.status !== 'pending').sort((a, b) => b.updated - a.updated).slice(0, 200);
+  const done = doneList();
   const rows = done.map(c => {
     const a = c.answer || {};
     const m = (c.media || []).find(x => x.kind === 'img');
-    const bad = (c.options || []).some(x => (a.choice || []).includes(x.id) && x.style === 'bad');
+    const bad = a.redo || (c.options || []).some(x => (a.choice || []).includes(x.id) && x.style === 'bad');
     const verdict = c.status === 'cancelled' ? (isPerm(c) ? '别处答了' : '已撤销') : (a.labels || []).join('、');
     const deliver = c.status === 'cancelled' || isPerm(c) ? '' : c.acked ? '已交给 Claude' : c.session ? 'Claude 还没收到' : '';
     const meta = [pname(c.project), ago(c.updated), a.device, deliver].filter(Boolean).join(' · ');
-    return h('div', { class: 'row' },
+    // 整行点开重看（10-21）：只看不问意见，要返修在里面点
+    const open = () => { S.rvOrder = done.map(x => x.id); go('/done/' + c.id); };
+    return h('div', { class: 'row', role: 'link', tabindex: '0', title: '点开重看', onclick: open, onkeydown: e => { if (e.key === 'Enter' && e.target === e.currentTarget) { e.preventDefault(); open(); } } },
       h('span', { class: 'n s' }, pad(c.seq)),
       m ? h('img', { src: m.thumb || m.src, alt: '', loading: 'lazy' }) : h('span', { class: 'ph' }),
-      h('div', null, h('div', { class: 't' }, hl(c.title)), h('div', { class: 'm' }, meta), a.note ? h('div', { class: 'm' }, '备注：' + a.note) : null),
-      h('span', { class: 'v' + (c.status === 'cancelled' ? ' cx' : bad ? ' no' : '') }, verdict),
-      isPerm(c) ? h('span') : h('button', { class: 'x', type: 'button', onclick: async () => {
-        try { await api('/api/cards/' + c.id + '/reopen', { method: 'POST', body: {} }); S.cur['f:' + c.project] = c.id; go('/p/' + c.project); }
-        catch (e) { toast(e.message); }
-      } }, '撤回重定'));
+      h('div', null, h('div', { class: 't' }, hl(c.title)), h('div', { class: 'm' }, meta), a.note ? h('div', { class: 'm' }, (a.redo ? '返修：' : '备注：') + a.note) : null),
+      h('span', { class: 'v' + (c.status === 'cancelled' ? ' cx' : bad ? ' no' : ''), title: verdict }, verdict),
+      isPerm(c) ? h('span') : h('button', { class: 'x', type: 'button', onclick: e => { e.stopPropagation(); reopenCard(c); } }, '撤回重定'));
   });
   const projs = S.projects.map(p => h('div', { class: 'prow' + (p.archived ? ' arch' : '') },
     h('span', null, p.name), h('span', { class: 'm', style: 'font-size:12px;color:var(--ink-3)' }, `待定 ${queue(p.slug).length} · 已定 ${p.answered}`),
     h('button', { class: 'x', type: 'button', onclick: async () => { await api('/api/projects', { method: 'POST', body: { slug: p.slug, archived: !p.archived } }); await loadState(); } }, p.archived ? '恢复' : '归档')));
   main.replaceChildren(h('div', { class: 'page' },
-    h('h2', { class: 'h' }, '已定'),
+    h('h2', { class: 'h' }, '已定', rows.length ? h('small', null, '点一行重看；要改在里面点「返修」') : null),
     rows.length ? rows : h('p', { style: 'color:var(--ink-3)' }, '还没有定过的卡片。'),
     projs.length ? h('div', { class: 'projs' }, h('h3', null, '项目（做完的归档，就不再出现在顶部）'), projs) : null));
+}
+async function reopenCard(c) {
+  try { await api('/api/cards/' + c.id + '/reopen', { method: 'POST', body: {} }); S.cur['f:' + c.project] = c.id; go('/p/' + c.project); }
+  catch (e) { toast(e.message); }
+}
+
+/* ---------- 已定重看（10-21 用户定）：点开只看，不问意见；点「返修」才出意见框，提交后交回推卡的会话 ---------- */
+/* 当时选的是哪几项；返修过的卡标「原来选的」 */
+function mineOf(c) {
+  const a = c.status === 'pending' ? null : c.answer;
+  if (!a) return { ids: new Set(), tag: '' };
+  return a.redo ? { ids: new Set((a.prev && a.prev.choice) || []), tag: '原来选的' } : { ids: new Set(a.choice || []), tag: '你选的' };
+}
+const rvOrder = () => { const ids = doneList().map(c => c.id); return S.rvOrder && S.rvOrder.some(id => S.byId.has(id)) ? S.rvOrder.filter(id => S.byId.has(id)) : ids; };
+function rvCard(id) { return S.byId.get(id) || (S.rvExtra && S.rvExtra.get(id)); }
+function renderReview(main, id) {
+  const c = rvCard(id);
+  if (!c) {
+    // 太早的卡不在 /api/state 里（只给最近 400 张）：单独拉一次
+    if (!main._ui) {
+      main._ui = { root: h('section', { class: 'focus review' }, h('div', { class: 'empty' }, h('p', null, '载入中…'))), id: null };
+      main.append(main._ui.root);
+      api('/api/cards/' + id).then(x => { (S.rvExtra ||= new Map()).set(x.id, x); main._ui = null; main.replaceChildren(); render(); })
+        .catch(() => main._ui.root.replaceChildren(h('div', { class: 'empty' }, h('h2', null, '找不到这张卡'), h('p', null, h('a', { href: '/done', 'data-nav': true }, '← 回已定列表')))));
+    }
+    return;
+  }
+  if (c.status === 'pending') { S.cur['f:' + c.project] = c.id; history.replaceState(null, '', '/p/' + c.project); return render(); }
+  let ui = main._ui;
+  if (!ui || ui.id === null) { main.replaceChildren(); ui = main._ui = { root: h('section', { class: 'focus review' }), id: undefined, rev: null }; main.append(ui.root); }
+  // 交没交给 Claude 不改 rev：ack 变了也要重画，不然一直显示「Claude 还没收到」
+  if (ui.id === c.id && ui.rev === c.rev && ui.ack === c.acked) return;
+  const ctx = main._ctx = { key: 'r:' + c.id, review: true, id: c.id };
+  ui.root.classList.toggle('textq', tileMode(c));
+  ui.root.classList.toggle('sheet', !tileMode(c));
+  ui.root.replaceChildren(...kids(rvNav(c), stageEl(c, ctx, {}), infoEl(c, ctx, { review: true }), factsEl(c, { compact: true })));
+  ui.id = c.id; ui.rev = c.rev; ui.ack = c.acked;
+  watchSheet(ui.root);
+  if (tileMode(c) && figIdx(c).length) guardFigs(main, ctx, {}, c);
+}
+function rvNav(c) {
+  const ids = rvOrder(), i = ids.indexOf(c.id), n = ids.length;
+  return h('nav', { class: 'rvnav', 'aria-label': '翻看已定' },
+    h('a', { class: 'back', href: '/done', 'data-nav': true }, '← 已定列表'),
+    h('button', { class: 'tx', type: 'button', disabled: i <= 0, onclick: () => rvStep(-1) }, '‹ 上一张'),
+    h('span', { class: 'pos' }, i >= 0 ? `${i + 1} / ${n}` : ''),
+    h('button', { class: 'tx', type: 'button', disabled: i < 0 || i >= n - 1, onclick: () => rvStep(1) }, '下一张 ›'),
+    hover ? h('span', { class: 'keys' }, isPerm(c) ? '← → 翻看　Esc 回列表' : '← → 翻看　R 返修　Esc 回列表') : null);
+}
+/* 当时怎么定的：选了什么、写的意见、在哪台设备、几时、交没交给 Claude */
+function rvAnsEl(c) {
+  const a = c.answer || {};
+  const when = [a.device, ago(a.at || c.updated)].filter(Boolean).join(' · ');
+  const deliver = c.status === 'cancelled' || isPerm(c) ? '' : c.acked ? '已交给 Claude' : c.session ? 'Claude 还没收到' : '没绑会话';
+  const opts = c.options || [], mine = mineOf(c);
+  // 大图 + 底部按钮的卡：选项在重看时不画按钮，在这里排一行，当时选的那项标黑
+  const chips = !tileMode(c) && !opts.some(x => x.media != null) && opts.length
+    ? h('div', { class: 'rv-opts' }, opts.map(x => h('span', { class: 'rv-opt' + (mine.ids.has(x.id) ? ' on' : '') + (x.style === 'bad' ? ' no' : '') }, hl(x.label)))) : null;
+  let head;
+  if (c.status === 'cancelled') head = [h('b', null, isPerm(c) ? '别处答了' : '已撤销'), '这张没有定，是 Claude 撤掉或你选了在对话里说'];
+  else if (a.redo) head = [h('b', { class: 'no' }, '你点了返修'), (a.prev && (a.prev.labels || []).length) ? `原来选的：${a.prev.labels.join('、')}` : ''];
+  else head = [h('b', null, '你定的：' + (a.labels || []).join('、'))];
+  return h('div', { class: 'rv-ans' },
+    h('div', { class: 'rv-h' }, head),
+    a.note ? h('div', { class: 'rv-note' }, (a.redo ? '返修意见：' : '当时写的：') + a.note) : null,
+    a.redo && a.prev && a.prev.note ? h('div', { class: 'rv-note old' }, '原来写的：' + a.prev.note) : null,
+    chips,
+    h('div', { class: 'rv-m' }, [when, deliver].filter(Boolean).join(' · ')));
+}
+function rvActs(c, ctx) {
+  if (isPerm(c)) return null;  // 授权卡答完 Claude 就继续了：只看
+  if (S.note && S.note.id === c.id && S.note.oid === '__redo') return redoNoteEl(c, ctx);
+  return h('div', { class: 'acts rv-acts' },
+    h('span', { class: 'chats' }, h('button', { class: 'chat', type: 'button', title: '把这张放回待定队列，重新选一次', onclick: () => reopenCard(c) }, '撤回重定')),
+    h('button', { class: 'b no', type: 'button', title: '写哪里要改，交回推这张卡的 Claude 会话（按 R）', onclick: () => redoOpen(c, ctx) }, '返修'));
+}
+function rvRefreshActs(c, ctx) {
+  const root = $('#main .focus.review'), a = root && $('.info > .acts', root);
+  if (a) a.replaceWith(rvActs(c, ctx) || '');
+}
+function redoOpen(c, ctx) {
+  if (isPerm(c) || c.status === 'pending') return;
+  S.note = { id: c.id, oid: '__redo', text: S.note && S.note.id === c.id ? S.note.text : '' };
+  rvRefreshActs(c, ctx);
+}
+function redoNoteEl(c, ctx) {
+  const ta = h('textarea', { class: 'note', rows: 2, placeholder: '哪里要改？写清楚改哪、改成什么样', 'aria-label': '返修意见' });
+  ta.value = S.note.text || '';
+  ta.addEventListener('input', () => { if (S.note) S.note.text = ta.value; });
+  const btn = h('button', { class: 'b no', type: 'button' }, '提交返修');
+  const send = async () => {
+    const note = ta.value.trim();
+    if (!note) { ta.focus(); return; }
+    if (btn.disabled) return;
+    btn.disabled = true; btn.textContent = '提交中…';
+    try {
+      const r = await api('/api/cards/' + c.id + '/redo', { method: 'POST', body: { note, device: device() } });
+      S.note = null;
+      const where = !c.session ? '已记下（这张没绑会话，Claude 不会自动收到）' : r.listening ? '已传给 Claude' : 'Claude 下次查看时收到';
+      toast([h('span', { class: 'n' }, pad(c.seq)), ` 返修 · ${where}`]);
+      await loadState();
+    } catch (e) { btn.disabled = false; btn.textContent = '提交返修'; toast('没提交上：' + e.message); }
+  };
+  const cancel = () => { S.note = null; rvRefreshActs(c, ctx); };
+  btn.addEventListener('click', send);
+  ta.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); send(); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); cancel(); }
+  });
+  setTimeout(() => { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }, 30);
+  return h('div', { class: 'acts noting' }, h('div', { class: 'nfor' }, h('b', null, '返修'), c.session ? ' · 交回推这张卡的 Claude 会话' : ' · 这张没绑会话，只记在板上'), ta,
+    h('div', { class: 'nbtns' },
+      h('span', { class: 'nh' }, '回车提交 · Shift + 回车换行 · Esc 取消'),
+      h('button', { class: 'tx', type: 'button', onclick: cancel }, '取消'), btn));
+}
+function rvStep(d) {
+  const ids = rvOrder(), i = ids.indexOf(S.route.id), j = i + d;
+  if (i < 0 || j < 0 || j >= ids.length) return;
+  if (S.note && S.note.oid === '__redo') S.note = null;
+  history.replaceState(null, '', '/done/' + ids[j]); render(); window.scrollTo(0, 0);
+}
+function rvKey(e) {
+  const c = rvCard(S.route.id);
+  if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { e.preventDefault(); rvStep(e.key === 'ArrowRight' ? 1 : -1); }
+  else if (e.key === 'Escape') { e.preventDefault(); go('/done'); }
+  else if ((e.key === 'r' || e.key === 'R') && c) { e.preventDefault(); redoOpen(c, $('#main')._ctx); }
+  else if ((e.key === 'o' || e.key === ' ') && c && (c.media || []).length) { e.preventDefault(); openLb(c, 0, $('#main')._ctx); }
 }
 
 /* ---------- 派活：文字 + 附件交给分拣台（10-20） ---------- */
@@ -944,6 +1078,7 @@ document.addEventListener('keydown', e => {
   if ($('#lb').classList.contains('on')) return lbKey(e);
   if (e.target.matches('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === '?') { location.href = '/help'; return; }
+  if (S.route?.type === 'review') return rvKey(e);
   const ctx = activeCtx(); if (!ctx) return;
   const c = curCard(ctx).c;
   const dg = (e.code || '').match(/^(?:Digit|Numpad)([1-9])$/);
