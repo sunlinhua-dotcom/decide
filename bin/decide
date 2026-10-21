@@ -105,6 +105,8 @@ decide —— 把要用户拍板的事推到 decide 决策板网页，等用户�
     用户在对话里说了「07 返修，喷嘴太粗」时，替他在网页上记下（选项可写 通过 / 返修 / A / 第几个）。
   decide chat [编号…]
     用户在对话里直接提意见时用：不带编号 = 本会话所有待定卡；带编号 = 只清这几张。网页上随即消失，记成「在对话里说」。
+  decide heard [编号…]
+    用户在板上点了「在对话里说」，而他推卡之前就已经在对话里给了答案：停掉这几张的 15 分钟提醒（不带编号 = 本会话全部）。
 
 查看与管理
   decide ls [-p 项目] [-s pending|answered|cancelled|all] [--pending] [-n 条数]
@@ -1078,9 +1080,8 @@ def cmd_listen(a):
             print(f"用户在 decide 上定了 {len(got)} 张：")
             for x in got:
                 print("  " + fmt_card(x))
-            chat = [x for x in got if "chat" in ((x.get("answer") or {}).get("choice") or [])]
-            if chat:
-                print("其中 " + "、".join(f"{x['seq']:02d}" for x in chat) + " 用户选了「在对话里说」：别再追问这几张，等他在对话里给意见。")
+            for line in chat_notes(got):
+                print(line)
             http(c, "POST", "/api/ack", {"ids": [x["id"] for x in got]}, timeout=20)
             print("（处理完记得重新挂 decide listen）")
             return 0
@@ -1110,11 +1111,24 @@ def pending_note(c, why):
     return f"decide：{why}，本会话还有 {len(p)} 张待定（编号 {seqs}），请用 run_in_background 重挂 decide listen。"
 
 
+def chat_notes(cards):
+    """「在对话里说」的卡怎么跟进：卡片弹出后用户已经在对话里发过消息的，直接去看那条；
+    没有的，先看推卡之前他说的最后一句——答案已经在里面就 decide heard 停掉提醒。"""
+    chat = [x for x in cards if "chat" in ((x.get("answer") or {}).get("choice") or [])]
+    said = [x for x in chat if (x.get("answer") or {}).get("said")]
+    rest = [x for x in chat if x not in said]
+    seqs = lambda xs: "、".join(f"{x['seq']:02d}" for x in xs)
+    out = []
+    if said:
+        out.append(f"其中 {seqs(said)} 用户选了「在对话里说」，卡片弹出后他已经在对话里发过消息：回看他最近的消息，按那里的意见处理这几张，别再追问。")
+    if rest:
+        out.append(f"其中 {seqs(rest)} 用户选了「在对话里说」：先回看你推这几张卡之前他发的最后一条消息——里面已经有答案，就跑 decide heard {seqs(rest).replace('、', ' ')} 停掉 15 分钟提醒并照做；没有就别追问，等他在对话里给意见。")
+    return out
+
+
 def answers_text(cards, why):
     lines = [f"用户在 decide 上已经定了 {len(cards)} 张（{why}）："] + ["  " + fmt_card(x) for x in cards]
-    chat = [x for x in cards if "chat" in ((x.get("answer") or {}).get("choice") or [])]
-    if chat:
-        lines.append("其中 " + "、".join(f"{x['seq']:02d}" for x in chat) + " 用户选了「在对话里说」：别再追问这几张，等他在对话里给意见。")
+    lines += chat_notes(cards)
     lines.append("按这些答案接着做，不要再说「在等用户在 decide 上定」。")
     return "\n".join(lines)
 
@@ -1222,6 +1236,29 @@ def cmd_resolve(a):
     except ApiError as e:
         die(f"记不上：{e}")
     print(fmt_card(r))
+    return 0
+
+
+def cmd_heard(a):
+    """用户在推卡之前就已经在对话里给了答案：把这几张「在对话里说」的卡停表，板上不再提醒。"""
+    c = conf()
+    ids = []
+    for ref in a.refs:
+        ref = ref.lstrip("#")
+        if is_seq(ref):
+            found = http(c, "GET", f"/api/cards?seq={int(ref)}&limit=1")["cards"]
+            if not found:
+                die(f"没有编号 {ref} 的卡片")
+            ids.append(found[0]["id"])
+        else:
+            ids.append(ref)
+    if ids:
+        n = http(c, "POST", "/api/chatwait", {"ids": ids, "act": "done"})["n"]
+    elif SESSION:
+        n = http(c, "POST", "/api/heard", {"session": SESSION})["heard"]
+    else:
+        die("没有会话 id：给编号，或设 DECIDE_SESSION")
+    print(f"已停掉 {n} 张的提醒" if n else "没有在等提醒的卡")
     return 0
 
 
@@ -1518,6 +1555,8 @@ def main():
     p.add_argument("note", nargs="*")
     p = sub.add_parser("chat")
     p.add_argument("refs", nargs="*")
+    p = sub.add_parser("heard")
+    p.add_argument("refs", nargs="*")
     p = sub.add_parser("ls")
     p.add_argument("-p", "--project")
     p.add_argument("-s", default="all", choices=["pending", "answered", "cancelled", "all"])
@@ -1554,7 +1593,7 @@ def main():
         return cmd_push(a, kind)
     if a.cmd == "q":
         return cmd_q(a)
-    return {"wait": cmd_wait, "listen": cmd_listen, "resolve": cmd_resolve, "chat": cmd_chat, "ls": cmd_ls, "show": cmd_show, "replan": cmd_replan, "link": cmd_link, "cancel": cmd_cancel, "project": cmd_project,
+    return {"wait": cmd_wait, "listen": cmd_listen, "resolve": cmd_resolve, "chat": cmd_chat, "heard": cmd_heard, "ls": cmd_ls, "show": cmd_show, "replan": cmd_replan, "link": cmd_link, "cancel": cmd_cancel, "project": cmd_project,
             "open": cmd_open, "key": cmd_key, "doctor": cmd_doctor, "hook": cmd_hook}[a.cmd](a)
 
 

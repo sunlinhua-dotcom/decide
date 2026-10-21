@@ -587,11 +587,12 @@ function actsEl(c, ctx) {
   if (c.multi && tileMode(c)) box.append(h('button', { class: 'b go mgo', type: 'button', disabled: !sel.size, onclick: () => submit(c, [...sel], ctx) }, sel.size ? `确定（${sel.size} 项）` : '先勾选'));
   if (isPerm(c)) return box;
   const grp = chatGroup(c);
-  // 两个文字链接竖着叠成一小列：按钮多的卡（429：A/B/C + 要改）横排会把标题挤成一列一个字
+  // 两个小按钮竖着叠成一小列：按钮多的卡（429：A/B/C + 要改）横排会把标题挤成一列一个字。
+  // 带颜色带图标的按钮：在对话里说（蓝）、在这里写意见（白）
   box.prepend(h('span', { class: 'chats' },
-    h('button', { class: 'chat', type: 'button', title: '意见在 Claude 对话里打，这些卡从这里清掉（按 C）', onclick: () => toChat(c, ctx) },
-      grp.length > 1 ? `这 ${grp.length} 张在对话里说` : '在对话里说'),
-    h('span', { class: 'cw' }, h('button', { class: 'chat', type: 'button', title: '不选现成选项，直接在这里写全部意见（按 W）', onclick: () => freeNote(c, ctx) }, '在这里写意见'),
+    h('button', { class: 'chat c-talk', type: 'button', title: '意见在 Claude 对话里打，这些卡从这里清掉（按 C）；卡片弹出后你已经在对话里说过就不再提醒', onclick: () => toChat(c, ctx) },
+      h('i', { class: 'ci ci-talk' }), grp.length > 1 ? `这 ${grp.length} 张在对话里说` : '在对话里说'),
+    h('span', { class: 'cw' }, h('button', { class: 'chat c-write', type: 'button', title: '不选现成选项，直接在这里写全部意见（按 W）', onclick: () => freeNote(c, ctx) }, h('i', { class: 'ci ci-pen' }), '在这里写意见'),
       micBtn(voNote(c, '__note', cur => freeNote(cur, ctx)), '直接说意见：按住说话，松开变成文字'))));
   return box;
 }
@@ -741,7 +742,11 @@ async function toChat(c, ctx) {
     const r = await api('/api/chat', { method: 'POST', body: { ids: grp.map(x => x.id), device: device() } });
     const seqs = r.seqs.map(pad);
     const span = seqs.length > 2 ? `${seqs[0]}–${seqs[seqs.length - 1]}` : seqs.join('、');
-    const where = !c.session ? '已清掉' : r.listening ? '已告诉 Claude，去对话里说吧' : 'Claude 下次查看时知道';
+    // 卡片弹出后你已经在那个对话里发过消息：算说过了，不计时提醒
+    const said = (r.said || []).length === r.seqs.length;
+    const mins = Math.round((S.chatWait || 900) / 60);
+    const where = !c.session ? '已清掉' : said ? '你已经在对话里说过，不再提醒'
+      : (r.listening ? '已告诉 Claude，去对话里说吧' : 'Claude 下次查看时知道') + `；${mins} 分钟没说会提醒`;
     S.last = null;
     toast([h('span', { class: 'n' }, span), ` 在对话里说 · ${where}`], async () => {
       try { for (const id of r.ids) await api('/api/cards/' + id + '/reopen', { method: 'POST', body: {} }); toast('已撤回'); await loadState(); }
@@ -965,7 +970,7 @@ function rvActs(c, ctx) {
   if (isPerm(c)) return null;  // 授权卡答完 Claude 就继续了：只看
   if (S.note && S.note.id === c.id && S.note.oid === '__redo') return redoNoteEl(c, ctx);
   return h('div', { class: 'acts rv-acts' },
-    h('span', { class: 'chats' }, h('button', { class: 'chat', type: 'button', title: '把这张放回待定队列，重新选一次', onclick: () => reopenCard(c) }, '撤回重定')),
+    h('span', { class: 'chats' }, h('button', { class: 'chat', type: 'button', title: '把这张放回待定队列，重新选一次', onclick: () => reopenCard(c) }, h('i', { class: 'ci ci-undo' }), '撤回重定')),
     micBtn(voNote(c, '__redo', cur => redoOpen(cur, ctx)), '说返修意见：按住说话，松开变成文字', 'big'),
     h('button', { class: 'b no', type: 'button', title: '写哪里要改，交回推这张卡的 Claude 会话（按 R）', onclick: () => redoOpen(c, ctx) }, '返修'));
 }

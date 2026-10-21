@@ -195,6 +195,26 @@ class OffTest(Base):
         self.assertNotIn("wait", a)
         self.assertTrue(a["heard"])
 
+    def test_chat_said(self):
+        # 卡片弹出后用户已经在那个会话里发过消息：点「在对话里说」直接算说过，不计时
+        g = self.card("弹出后已经说了", choice=None, session="sess-said")
+        self.req("/api/heard", "POST", {"session": "sess-said"})
+        code, j = self.req("/api/chat", "POST", {"ids": [g["id"]], "device": "Mac"})
+        self.assertEqual((code, j["said"]), (200, [g["seq"]]))
+        a = self.req(f"/api/cards/{g['id']}")[1]["answer"]
+        self.assertNotIn("wait", a)
+        self.assertTrue(a["heard"] and a["said"])
+        # 消息在卡片弹出之前：照旧计时，交给 Claude 看对话决定要不要停表
+        h = self.card("弹出前说过", choice=None, session="sess-said")
+        code, j = self.req("/api/chat", "POST", {"ids": [h["id"]]})
+        self.assertEqual(j["said"], [])
+        a = self.req(f"/api/cards/{h['id']}")[1]["answer"]
+        self.assertTrue(a["wait"])
+        self.assertNotIn("said", a)
+        # 从没发过消息的会话：计时
+        k = self.card("没说过", choice=None, session="sess-never")
+        self.assertEqual(self.req("/api/chat", "POST", {"ids": [k["id"]]})[1]["said"], [])
+
 
 class OnTest(Base):
     """语音、按意思找都接上假服务：验证请求格式和结果处理。"""
