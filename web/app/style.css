@@ -88,6 +88,18 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
   .qstage.side.pics .tilew.has-rv > .tile { padding-bottom: 40px; }
   .qstage.side.pics .tile-t { font-size: 17px; line-height: 1.35; }
   .qstage.side.pics .tilew.nopic > .tile { flex-direction: row; align-items: baseline; gap: 12px; padding: 10px 16px; }
+  /* 右栏放不下：换紧凑卡，编号和标题同一行（七个长选项在 1280×690 上单列双列都放不下） */
+  .qstage.side.dense .tiles { gap: 8px; }
+  .qstage.side.dense .tile { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 10px; row-gap: 2px; align-items: baseline; align-content: start; padding: 9px 14px 10px; }
+  .qstage.side.dense .tile > :not(.tile-tag) { grid-column: 2; }
+  .qstage.side.dense .tile > .tile-k { grid-column: 1; grid-row: 1; }
+  .qstage.side.dense .tile-t { font-size: 17px; line-height: 1.32; }
+  .qstage.side.dense .tile-d { font-size: 12.5px; line-height: 1.45; }
+  .qstage.side.dense .tile:has(.tile-tag) .tile-t { padding-right: 44px; }
+  .qstage.side.dense .tile-tag { top: 9px; right: 10px; }
+  .qstage.side.dense .tilew.has-rv > .tile { padding-bottom: 38px; }
+  /* 紧凑了还放不下就在右栏里滚，「确定」钉在底下，不再退回大图 + 七行按钮 */
+  .qstage.side .tiles > .mbar { position: sticky; bottom: 0; z-index: 1; background: var(--paper); padding-bottom: 4px; }
 }
 .codew { display: flex; flex-direction: column; gap: 8px; min-height: 0; min-width: 0; }
 .code { margin: 0; flex: 1; min-height: 0; overflow: auto; padding: 18px 20px; border: 1px solid var(--line); border-radius: 14px; background: #fbfaf7; font: 13.5px/1.6 ui-monospace, "SF Mono", Menlo, Consolas, monospace; color: var(--ink); white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
