@@ -153,6 +153,9 @@ class OffTest(Base):
         self.assertEqual([c["id"] for c in j["cards"]], [a["id"]])
         j = self.req("/api/search?q=" + urllib.request.quote("待定"))[1]
         self.assertEqual(j["cards"], [])
+        # 只命中一半字也找得到（「顶栏颜色」→「顶栏改成项目色块」）
+        j = self.req("/api/search?q=" + urllib.request.quote("顶栏颜色"))[1]
+        self.assertIn(a["id"], [c["id"] for c in j["cards"]])
         # 编号直达
         j = self.req(f"/api/search?q={b['seq']}")[1]
         self.assertEqual(j["cards"][0]["id"], b["id"])

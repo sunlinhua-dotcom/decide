@@ -445,6 +445,7 @@ def lexical(docs, q):
     n = len(docs) or 1
     df = {t: sum(1 for d in docs if t in d["all"]) for t in qt}
     idf = {t: math.log(1 + n / (1 + df[t])) for t in qt}
+    units = max(1, len({t for t in qt if t.isascii()} | {ch for t in qt if not t.isascii() for ch in t}))
     now = time.time()
     out = []
     for d in docs:
@@ -462,7 +463,12 @@ def lexical(docs, q):
             if best:
                 score += best * idf[t]
                 hits.add(t)
-        cover = len([t for t in qt if t in hits or any(h for h in hits if h != t and t.isascii())]) / max(1, len(qt))
+        # 覆盖率按字算：「顶栏颜色」只命中「顶栏」也算盖住一半，不按两字片算成 1/3 被筛掉
+        got = set()
+        for t in qt:
+            if t in hits:
+                got.update([t] if t.isascii() else t)
+        cover = len(got) / units
         if num and d["seq"] == num:
             score += 100
         if len(qn) >= 2 and qn in d["f"]["title"]:
