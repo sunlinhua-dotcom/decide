@@ -392,6 +392,11 @@ pre code { white-space: pre; }
   .seq { font-size: 50px; }
   .tt h1 { font-size: 21px; }
   .tt h1.long { font-size: 19px; }
+  /* 手机上标题列只有 280 px：keep-all 只在标点处断，一整段括号里的话挪到下一行，36 字折成四行；
+     长标题改正常断行 + 严格标点禁则 */
+  .tt h1.long { word-break: normal; line-break: strict; }
+  .tt h1.xlong { font-size: 17.5px; line-height: 1.32; }
+  .seq.w4 { font-size: 40px; }
   .acts { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; background: var(--paper); border-top: 1px solid var(--line); padding: 12px 16px; padding-bottom: max(12px, env(safe-area-inset-bottom)); gap: 10px; }
   .acts { flex-wrap: wrap; }
   .acts .b { flex: 1; height: 52px; min-width: 0; overflow: hidden; text-overflow: ellipsis; padding: 0 8px; letter-spacing: .01em; }  /* 四个按钮时 C_34_2 这种短名要放得下（525） */  /* 长选项名截断，图下有全名（429） */
@@ -494,9 +499,9 @@ pre code { white-space: pre; }
 /* ---------- 方案（字多的方案图拆成网页文字 + 每节千问配图，425） ---------- */
 .plan { min-height: 0; display: flex; flex-direction: column; gap: 14px; }
 .plan-h { display: flex; align-items: flex-start; gap: 16px; }
-.plan-h h2 { font-family: var(--zh); font-size: 22px; line-height: 1.35; font-weight: 600; color: var(--ink); text-wrap: balance; word-break: keep-all; overflow-wrap: break-word; }
-.plan-h p { margin-top: 4px; font-size: 15px; line-height: 1.55; color: var(--ink-2); }
-.plan-src { margin-left: auto; flex: none; font-size: 13px; color: var(--ink-3); text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 5px; white-space: nowrap; }
+.plan-h h2 { font-family: var(--zh); font-size: 26px; line-height: 1.35; font-weight: 600; color: var(--ink); text-wrap: balance; word-break: normal; line-break: strict; overflow-wrap: break-word; }
+.plan-h p { margin-top: 4px; font-size: 17px; line-height: 1.55; color: var(--ink-2); }
+.plan-src { margin-left: auto; flex: none; font-size: 14px; color: var(--ink-3); text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 5px; white-space: nowrap; }
 .plan-src:hover { color: var(--ink); }
 .plan-g { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 430px), 1fr)); gap: 12px; }
 .plan-s { display: flex; gap: 14px; align-items: flex-start; padding: 14px 16px; background: #fff; border: 1px solid var(--line); border-left: 4px solid var(--c, var(--ink-3)); border-radius: 14px; }
@@ -504,24 +509,35 @@ pre code { white-space: pre; }
 .plan-pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .plan-pic.wait { display: grid; place-items: center; font-size: 11px; color: var(--ink-2); background: linear-gradient(100deg, #ece9e1 30%, #f6f4ee 50%, #ece9e1 70%) 0 0 / 220% 100%; animation: picwait 1.4s linear infinite; }
 .plan-b { min-width: 0; }
-.plan-b h3 { font-family: var(--zh); font-size: 18px; line-height: 1.35; font-weight: 600; color: var(--c, var(--ink)); margin-bottom: 4px; }
+.plan-b h3 { font-family: var(--zh); font-size: 21px; line-height: 1.35; font-weight: 600; color: var(--c, var(--ink)); margin-bottom: 4px; }
 /* 正文是整段中文长句、中间几乎没空格：keep-all 会只在空格处断，「元凶：GPU」后硬断一行，这里用正常断行 + 严格标点禁则 */
-.plan-b p, .plan-l li { font-size: 15.5px; line-height: 1.6; color: var(--ink); word-break: normal; line-break: strict; overflow-wrap: break-word; text-wrap: pretty; }
+.plan-b p, .plan-l li { font-size: 18px; line-height: 1.62; color: var(--ink); word-break: normal; line-break: strict; overflow-wrap: break-word; text-wrap: pretty; }
 .plan-l { padding-left: 1.2em; display: grid; gap: 4px; }
-.plan-f p { font-size: 14px; line-height: 1.55; color: var(--ink-2); }
+.plan-f p { font-size: 16.5px; line-height: 1.55; color: var(--ink-2); }
+.plan-b p + p { margin-top: 6px; }
+/* 方案文字 + 卡里其余的视频 / 照片：宽屏左右排、文字在框里滚，手机上下排 */
+.planmix { display: flex; flex-direction: column; gap: 16px; min-height: 0; min-width: 0; }
 @media (min-width: 761px) {
   .qstage.side.planq { --sidew: clamp(250px, 21vw, 340px); }
-  .qstage.planq .plan { overflow-y: auto; overscroll-behavior: contain; padding-right: 6px; }
+  .qstage.planq .plan, .planmix > .plan { overflow-y: auto; overscroll-behavior: contain; padding-right: 6px; }
+  .planmix { display: grid; grid-template-columns: minmax(min(100%, 380px), 1fr) minmax(0, var(--mixf, 0.9fr)); grid-template-rows: minmax(0, 1fr); gap: 20px; }
+  .planmix > .stage { min-height: 0; animation: none; }
+  .planmix.stack { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1.2fr) minmax(0, 1fr); gap: 16px; }
 }
 @media (min-width: 1600px) {
   .plan-g { grid-template-columns: repeat(auto-fill, minmax(min(100%, 560px), 1fr)); }
-  .plan-b p, .plan-l li { font-size: 17px; }
-  .plan-b h3 { font-size: 20px; }
-  .plan-h h2 { font-size: 26px; }
+  .plan-b p, .plan-l li { font-size: 19.5px; }
+  .plan-b h3 { font-size: 23px; }
+  .plan-h h2 { font-size: 30px; }
+  .plan-f p { font-size: 18px; }
   .plan-pic { width: 190px; }
 }
 @media (max-width: 760px) {
   .plan-s { flex-direction: column; }
+  .plan-h h2 { font-size: 22.5px; }
+  .plan-h p, .plan-f p { font-size: 15.5px; }
+  .plan-b h3 { font-size: 19.5px; }
+  .plan-b p, .plan-l li { font-size: 17px; }
   .plan-pic { width: 100%; }
 }
 @media (prefers-reduced-motion: reduce) { .plan-pic.wait { animation: none; } }

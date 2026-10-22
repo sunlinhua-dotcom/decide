@@ -57,8 +57,9 @@ decide —— 把要用户拍板的事推到 decide 决策板网页，等用户�
     -p <项目>                默认取 $DECIDE_PROJECT，没有就用当前 git 主仓库名（worktree 也认主仓库），再没有用目录名
     --sub <一句话>            问题下面的补充说明
     --svg <图.svg>            附一张示意图（流程 / 架构 / 对比），可重复；SVG 秒出、字清楚，比生图快
-                             密密麻麻的方案图（三节以上、400 字以上）自动拆成网页文字，每节千问配图；
-                             小节 <g> 上写 data-pic="画面描述" 可指定画什么；--raw-svg 照原样贴图
+                             字多的说明图（完成卡、方案卡：六行八十字以上、没有连线箭头）自动拆成网页文字，
+                             字号清楚；三节以上、400 字以上的再每节千问配图，小节 <g> 上写 data-pic="画面描述"
+                             可指定画什么；流程图照原样贴；--raw-svg 强制照原样贴图
     选项第三段带图            "A::代价::a.svg" —— 每个选项配一张小示意图
     选项第三段写「@画面」      "A::代价::@一只橘猫坐在窗台上" —— 卡片先上板，后台调你配的出图命令
                              （DECIDE_GEN_CMD，可配多条一起抢）出图，出一张补一张；出不来照样能按文字选
@@ -114,7 +115,7 @@ decide —— 把要用户拍板的事推到 decide 决策板网页，等用户�
   decide show <id>                 整张卡片 JSON
   decide cancel <id> …             撤销还没定的卡片
   decide link <编号|id> [名称::网址 …]   已上板的卡补可点链接（不给就从卡上的 SVG 里认网址；--clear 清掉）
-  decide replan <编号|id> …        已上板的卡：字多的 SVG 方案图改成网页文字 + 每节千问配图（--no-pics 不配图）
+  decide replan <编号|id> …        已上板的卡：字多的 SVG 说明图改成网页文字（三节以上的配千问图，--no-pics 不配）
   decide project ls | add <slug> [名字] | rename <slug> <名字> | archive <slug> | unarchive <slug>
   decide open [项目 …]             浏览器打开（自动登录）；给多个项目就开四宫格
   decide key --copy                把密钥复制到剪贴板（手机粘贴登录用）
@@ -378,8 +379,9 @@ def merge_links(*groups):
 
 
 def svg_plan(path):
-    """字很多的方案图（标题 + 一块块带框的小节）拆成结构，网页用原生文字排、每节配一张千问图。
-    不是这种图（流程 / 架构，字少）返回 None，照原样当示意图。"""
+    """字多的说明图（方案图、两栏完成卡、方案确认卡）拆成结构，网页用原生文字排：整张当图片缩放时，
+    1200 宽画布里 18 号字在 1280 屏上只剩 7 px、手机 5 px。
+    流程图 / 架构图这类字少、图形多的返回 None，照原样当示意图。配不配千问图另看 plan_pics。"""
     import xml.etree.ElementTree as ET
     try:
         root = ET.parse(path).getroot()
@@ -393,8 +395,12 @@ def svg_plan(path):
     total = sum(len(txt(e)) for e in texts)
     shapes = sum(1 for e in root.iter() if tag(e) in ("rect", "circle", "ellipse", "path", "line", "polyline",
                                                       "polygon", "image"))
-    # 方案图 = 一句句话（平均 10 字以上）、框比字少；手机界面 / 流程图是短标签配一堆图形，照原样贴
-    if len(texts) < 8 or total < 160 or total / len(texts) < 10 or shapes > len(texts):
+    # 说明图 = 一句句话（平均 10 字以上）、框比字少；手机界面 / 流程图是短标签配一堆图形，照原样贴。
+    # 六行、八十字就转：两栏完成卡常只有八行字，整张缩小一样看不清
+    if len(texts) < 6 or total < 80 or total / len(texts) < 10 or shapes > len(texts):
+        return None
+    # 带连线 / 箭头的是流程图（几个框之间连着箭头），拆成文字会丢掉谁连谁，照原样贴
+    if sum(1 for e in root.iter() if tag(e) in ("path", "line", "polyline")) >= 2 or "marker-end" in ET.tostring(root, "unicode"):
         return None
 
     def attr(e, k):
@@ -410,16 +416,58 @@ def svg_plan(path):
         except ValueError:
             return 16.0
     bold = lambda e: (attr(e, "font-weight") or "") in ("bold", "bolder", "600", "700", "800", "900")
+    num = lambda e, k: float(re.sub(r"[^\d.-]", "", e.get(k) or "0") or 0)
+    vb = [float(x) for x in re.split(r"[\s,]+", (root.get("viewBox") or "0 0 0 0").strip())[2:4]] or [0, 0]
+    cjk, punct = r"\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef", r"\u3000-\u303f\uff01-\uff0f\uff1a-\uff20"
+
+    def hue(c):
+        """小节左边条只用有颜色的强调色；黑灰字色当边条太重，交给网页默认灰"""
+        m = re.fullmatch(r"#([0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})", c or "")
+        if not m:
+            return None
+        d = m.group(1)
+        d = "".join(ch * 2 for ch in d[:3]) if len(d) < 6 else d[:6]
+        rgb = [int(d[i:i + 2], 16) for i in (0, 2, 4)]
+        return c if max(rgb) - min(rgb) > 40 else None
+
+    def join(els):
+        """一句话在图上折成几行时接回一句，网页按宽度自己折。算续行的两种：比本条缩进，
+        或同一列、上一行以逗号收尾且挨得近（「…约 30 分钟，」「合计一小时」）。
+        以「·」/ 编号 / 「改：」这类小标签开头、换了字色的是另一条，不接"""
+        out, prev, base = [], None, min((num(e, "x") for e in els), default=0)
+        for e in els:
+            t = txt(e)
+            wrap = prev is not None and attr(e, "fill") == attr(prev, "fill") and not re.match(
+                f"[·•●▪◦*\\-–—]|[（(]?\\d+[.、)）]|[①-⑳]|[{cjk}]{{1,6}}[：:]", t) and (
+                num(e, "x") > base + 6 or abs(num(e, "x") - num(prev, "x")) <= 2 and re.search(r"[，、；,]$", out[-1])
+                and 0 < num(e, "y") - num(prev, "y") <= 1.9 * fsize(e))
+            if wrap:
+                # 汉字接汉字、或挨着全角标点不加空格；汉字和数字 / 英文之间照中文排版留半角空格（「4 / 4 肉眼」）
+                glue = "" if (re.search(f"[{cjk}]$", out[-1]) and re.match(f"[{cjk}]", t)
+                              or re.search(f"[{punct}]$", out[-1]) or re.match(f"[{punct}]", t)) else " "
+                out[-1] += glue + t
+            else:
+                out.append(t)
+            prev = e
+        return out
+
+    def section(head, body):
+        t = txt(head) if head is not None else ""
+        sec = {"t": t, "lines": join(body)}
+        if len(t) > 80:  # 太长不像小标题：当正文第一行
+            sec = {"t": "", "lines": [t] + sec["lines"]}
+        if head is not None and hue(attr(head, "fill")):
+            sec["color"] = hue(attr(head, "fill"))
+        return sec
+
     plan = {"title": "", "sub": "", "lines": [], "foot": [], "secs": []}
     cands = [g for g in root.iter() if tag(g) == "g" and any(tag(k) == "rect" for k in g)
              and sum(1 for k in g.iter() if tag(k) == "text" and txt(k)) >= 2]
     secs_el = [g for g in cands if not any(o is not g and o in set(g.iter()) for o in cands)]
     in_sec = {k for g in secs_el for k in g.iter()}
-    num = lambda e, k: float(re.sub(r"[^\d.-]", "", e.get(k) or "0") or 0)
     if not secs_el:  # 没分组、直接画框写字（完成卡左右两栏）：按坐标把字归进框里
         boxes = [r for r in root.iter() if tag(r) == "rect" and parent.get(r) is root and num(r, "width") > 160
                  and num(r, "height") > 60]
-        vb = [float(x) for x in re.split(r"[\s,]+", (root.get("viewBox") or "0 0 0 0").strip())[2:4]] or [0, 0]
         boxes = [r for r in boxes if not (num(r, "width") >= 0.95 * vb[0] and num(r, "height") >= 0.95 * vb[1])]
         for r in sorted(boxes, key=lambda r: (num(r, "y"), num(r, "x"))):
             x0, y0, x1, y1 = num(r, "x"), num(r, "y"), num(r, "x") + num(r, "width"), num(r, "y") + num(r, "height")
@@ -429,20 +477,16 @@ def svg_plan(path):
                 continue
             ts.sort(key=lambda e: (num(e, "y"), num(e, "x")))
             head = next((e for e in ts if bold(e) or fsize(e) > fsize(ts[-1])), ts[0])
-            sec = {"t": txt(head), "lines": [txt(e) for e in ts if e is not head]}
-            if re.fullmatch(r"#[0-9a-fA-F]{3,8}", head.get("fill") or ""):
-                sec["color"] = head.get("fill")
-            plan["secs"].append(sec)
+            plan["secs"].append(section(head, [e for e in ts if e is not head]))
             in_sec.update(ts)
             secs_el.append(r)
     for g in sorted((x for x in secs_el if tag(x) == "g"), key=order.get):
         ts = [e for e in g.iter() if tag(e) == "text" and txt(e)]
         head = next((e for e in ts if bold(e)), ts[0])
         rect = next(k for k in g if tag(k) == "rect")
-        color = head.get("fill") if head.get("fill", "").startswith("#") else rect.get("stroke") or ""
-        sec = {"t": txt(head), "lines": [txt(e) for e in ts if e is not head]}
-        if re.fullmatch(r"#[0-9a-fA-F]{3,8}", color or ""):
-            sec["color"] = color
+        sec = section(head, [e for e in ts if e is not head])
+        if "color" not in sec and hue(rect.get("stroke")):
+            sec["color"] = rect.get("stroke")
         if g.get("data-pic"):  # 发卡的 Claude 自己写的画面描述，比自动拼的准
             sec["_pic"] = g.get("data-pic").strip()[:200]
         plan["secs"].append(sec)
@@ -453,16 +497,65 @@ def svg_plan(path):
         if fsize(big) > min(fsize(e) for e in top) or len(top) == 1:
             plan["title"] = txt(big)
             top.remove(big)
-    for e in top:
-        if not secs_el:
-            plan["lines"].append(txt(e))
-        elif order[e] < first:
-            plan["sub"] = (plan["sub"] + " " + txt(e)).strip()
+    if secs_el:
+        plan["sub"] = " ".join(join([e for e in top if order[e] < first]))
+        plan["foot"] = join([e for e in top if order[e] >= first])
+    elif top:
+        # 没框也没分组（完成卡「做完了 / 还剩」、方案确认卡「原因 / 改法」）：比正文大或加粗的字是小标题，按它分节
+        body = max(set(map(fsize, top)), key=lambda f: sum(1 for e in top if fsize(e) == f))
+        is_head = lambda e: fsize(e) > body + 0.5 or (bold(e) and fsize(e) >= body)
+        xs = sorted({round(num(e, "x")) for e in top})
+        gap, cut = max(((b - a, b) for a, b in zip(xs, xs[1:])), default=(0, 0))
+        cols = [top]
+        if vb[0] and gap > 0.25 * vb[0]:  # 左右两栏：先排完左栏再排右栏，不按行交错
+            L, R = [e for e in top if num(e, "x") < cut], [e for e in top if num(e, "x") >= cut]
+            if len(L) >= 3 and len(R) >= 3:
+                cols = [L, R]
+        pre, foot, groups = [], [], []
+        for col in cols:
+            cur = None
+            for e in sorted(col, key=lambda e: (num(e, "y"), num(e, "x"))):
+                if is_head(e):
+                    cur = [e, []]
+                    groups.append(cur)
+                elif cur is None:
+                    pre.append(e)
+                else:
+                    cur[1].append(e)
+        # 小节最后隔一大段空的那行（「代价：…」）是结尾的话，不属于这一节
+        steps = sorted(num(b, "y") - num(a, "y") for _, ls in groups for a, b in zip(ls, ls[1:]))
+        step = steps[len(steps) // 2] if steps else 0
+        for g in groups:
+            ls = g[1]
+            cut_at = next((i for i in range(1, len(ls)) if step and num(ls[i], "y") - num(ls[i - 1], "y") > 1.6 * step), None)
+            if cut_at is not None:
+                foot += ls[cut_at:]
+                del ls[cut_at:]
+        for head, ls in groups:
+            if ls:
+                plan["secs"].append(section(head, ls))
+            else:  # 只有一行大字（「推荐：…」）：放结尾
+                foot.append(head)
+        if plan["secs"]:
+            plan["sub"] = " ".join(join(pre))
+            plan["foot"] = join(sorted(foot, key=lambda e: (num(e, "y"), num(e, "x"))))
         else:
-            plan["foot"].append(txt(e))
-    # 只有密密麻麻的才转（三节以上、400 字以上，如 425）；两栏完成卡、三栏对比这种原图就看得清，
-    # 照原样贴图、不配千问图（10-18 用户：简单的不需要千问生成）
-    return plan if len(plan["secs"]) >= 3 and total >= 400 else None
+            plan["lines"] = join(sorted(top, key=order.get))
+    # 板子收的上限（见 decide_server.clean_plan）；超了说明不是说明卡，照原样贴图
+    if len(plan["secs"]) > 12 or len(plan["lines"]) > 40 or len(plan["foot"]) > 8 or len(plan["sub"]) > 600 \
+            or any(len(s["lines"]) > 16 or any(len(x) > 400 for x in s["lines"]) for s in plan["secs"]) \
+            or any(len(x) > 400 for x in plan["lines"] + plan["foot"]):
+        return None
+    plan["title"] = plan["title"][:200]
+    return plan if plan["secs"] or plan["lines"] else None
+
+
+def plan_pics(plan):
+    """千问配图只给密密麻麻的（三节以上、400 字以上）；两栏完成卡、方案确认卡只换网页文字，
+    不配图：简单的不需要配图"""
+    n = sum(map(len, [plan["title"], plan["sub"], *plan["lines"], *plan["foot"]]))
+    n += sum(len(x["t"]) + sum(map(len, x["lines"])) for x in plan["secs"])
+    return len(plan["secs"]) >= 3 and n >= 400
 
 
 def plan_gen(plan, style=None):
@@ -849,7 +942,7 @@ def cmd_push(a, kind):
                 m["role"] = "src"
                 spec["plan"] = plan
                 # 没配出图命令（DECIDE_GEN_CMD）就只转网页文字，不挂「配图生成中」占位
-                plan_jobs = plan_gen(plan, getattr(a, "gen_style", None)) if gen_cmds(c) else []
+                plan_jobs = plan_gen(plan, getattr(a, "gen_style", None)) if gen_cmds(c) and plan_pics(plan) else []
                 break
     auto = []
     if not getattr(a, "no_auto_link", False):
@@ -1335,7 +1428,7 @@ def cmd_replan(a):
         if not plan:
             print(f"{card['seq']:02d}：这张图字不多，不拆")
             continue
-        jobs = [] if a.no_pics or not gen_cmds(c) else plan_gen(plan, a.gen_style)
+        jobs = [] if a.no_pics or not gen_cmds(c) or not plan_pics(plan) else plan_gen(plan, a.gen_style)
         http(c, "POST", f"/api/cards/{card['id']}/plan", {"plan": plan, "src": idx})
         print(f"{card['seq']:02d}：拆成 {len(plan['secs'])} 节，已换成网页文字")
         if jobs:

@@ -256,8 +256,9 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(card["status"], "answered")
         self.assertEqual(card["answer"]["note"], "neither, go up")
 
-    def test_only_dense_svg_becomes_web_text(self):
-        def plan_svg(path, n, lines):
+    def test_prose_svg_becomes_web_text(self):
+        """字多的说明图都拆成网页文字（整张缩小后字看不清）；带连线箭头的流程图照原样当图"""
+        def plan_svg(path, n, lines, arrows=False):
             parts = ['<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 900">',
                      '<text x="40" y="50" font-size="30">Plan for the next release</text>']
             for i in range(n):
@@ -266,18 +267,20 @@ class ServerTest(unittest.TestCase):
                              f'<text x="60" y="{y + 40}" font-size="22" font-weight="700">Step {i + 1} heading</text>')
                 parts += [f'<text x="60" y="{y + 80 + j * 34}" font-size="18">{lines}</text>' for j in range(4)]
                 parts.append("</g>")
+            if arrows:
+                parts += [f'<path d="M600 {y + 240} V{y + 260}" stroke="#333"/>' for y in (90, 350)]
             with open(path, "w") as f:
                 f.write("".join(parts) + "</svg>")
-        simple, dense = os.path.join(self.tmp, "simple.svg"), os.path.join(self.tmp, "dense.svg")
+        simple, dense, flow = (os.path.join(self.tmp, n) for n in ("simple.svg", "dense.svg", "flow.svg"))
         plan_svg(simple, 2, "one short line here")
         plan_svg(dense, 3, "a longer sentence that explains what changes in this step and why")
-        for path, want in ((simple, False), (dense, True)):
+        plan_svg(flow, 3, "a longer sentence that explains what changes in this step and why", arrows=True)
+        for path, secs in ((simple, 2), (dense, 3), (flow, 0)):
             r = self.cli("q", "Plan ok?", "Yes", "No", "-p", "smoke", "--svg", path)
             self.assertEqual(r.returncode, 0, r.stderr)
             card = json.loads(self.req(f"/api/cards/{r.stdout.split()[0]}")[2])
-            self.assertEqual(bool(card.get("plan")), want, path)
-            if want:
-                self.assertEqual(len(card["plan"]["secs"]), 3)
+            self.assertEqual(len((card.get("plan") or {}).get("secs", [])), secs, path)
+            if secs:
                 self.assertFalse(any(s.get("gen") for s in card["plan"]["secs"]))  # 没配出图命令就不挂占位
 
     def test_image_review_card(self):
