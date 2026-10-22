@@ -1,4 +1,4 @@
-"""字多的说明图拆成网页文字：两栏完成卡、没框的方案卡都拆，流程图照原样当图；配图只给三节以上的。
+"""字多的说明图拆成网页文字：两栏完成卡（列表包在 <g> 里的也算）、没框的方案卡都拆，流程图照原样当图；配图只给三节以上的。
 
 python3 -m unittest discover -s tests -v
 只用标准库。
@@ -37,6 +37,30 @@ BOXED = HEAD + """
 <text x="635" y="222" font-size="18">· 选项自带的小图这次没有动</text>
 <text x="40" y="620" font-size="20"><tspan fill="#d33f2a">推荐</tspan>：先收工，下次遇到再改。</text>
 </svg>"""
+
+# 两栏卡里的编号列表包在只管字号的 <g> 里，冒号收尾的一句折成两行；嵌了照片的照原样当图
+GROUPED = HEAD + """
+<text x="48" y="62" font-size="30" font-weight="700">两种做法：人一步步操作，还是交给助手跑完再拍板</text>
+<rect x="48" y="96" width="540" height="520" fill="#fff" stroke="#d9d4ca"/>
+<text x="76" y="140" font-size="23" font-weight="700" fill="#6b6b6b">手动做（人在操作）</text>
+<g font-size="19" fill="#2b2b2b">
+<text x="76" y="186">1. 人决定这里要改什么</text>
+<text x="76" y="224">2. 人写指令，工具出一版</text>
+<text x="76" y="262">3. 人把几版拼成最终稿</text>
+</g>
+<text x="76" y="400" font-size="19" fill="#6b6b6b">像请了个打字员：</text>
+<text x="76" y="432" font-size="19" fill="#6b6b6b">每个字都得你口述。</text>
+<rect x="612" y="96" width="540" height="520" fill="#fff" stroke="#c0392b"/>
+<text x="640" y="140" font-size="23" font-weight="700" fill="#c0392b">交给助手（人只拍板）</text>
+<g font-size="19" fill="#2b2b2b">
+<text x="640" y="186">1. 人给一句话和素材</text>
+<text x="640" y="224">2. 助手自己找出要改的地方</text>
+<text x="640" y="262">3. 人在决策板上点通过或返修</text>
+</g>
+<text x="48" y="672" font-size="20">旧版的毛病：观众以为是在教手动做法。</text>
+<text x="48" y="712" font-size="20"><tspan fill="#d33f2a">推荐</tspan> 新版：反转改成助手自己看出来的。</text>
+</svg>"""
+PHOTO = GROUPED.replace("</svg>", '<image x="700" y="300" width="300" height="200" href="data:image/jpeg;base64,AAAA"/></svg>')
 
 # 没框的方案卡：加粗大字是小标题；最后隔一大段空的那行是结尾的话
 BARE = HEAD + """
@@ -90,6 +114,17 @@ class SvgPlanTest(unittest.TestCase):
         self.assertEqual(p["secs"][1]["lines"][0], "· 流程图仍按图片显示，字小时要点开放大看，下一版再考虑拆成文字")
         self.assertTrue(p["foot"][0].startswith("推荐"))
         self.assertFalse(self.cli.plan_pics(p))
+
+    def test_boxed_lists_inside_plain_groups(self):
+        p = self.plan(GROUPED)
+        self.assertEqual([s["t"] for s in p["secs"]], ["手动做（人在操作）", "交给助手（人只拍板）"])
+        self.assertEqual(p["secs"][0]["lines"], ["1. 人决定这里要改什么", "2. 人写指令，工具出一版", "3. 人把几版拼成最终稿",
+                                                 "像请了个打字员：每个字都得你口述。"])
+        self.assertEqual(len(p["secs"][1]["lines"]), 3)
+        self.assertEqual(len(p["foot"]), 2)
+
+    def test_embedded_photo_stays_image(self):
+        self.assertIsNone(self.plan(PHOTO))
 
     def test_bare_card_splits_on_headings(self):
         p = self.plan(BARE)
