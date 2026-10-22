@@ -247,7 +247,8 @@ function renderFocus(host, ctx, o) {
 function guardFigs(host, ctx, o, c) {
   const check = () => {
     const ui = host._ui;
-    if (!ui || ui.id !== c.id || ui.rev !== c.rev || S.wide.has(c.id) || !tileMode(c)) return;
+    // 方案卡不换「大图 + 底部按钮」：方案文字会被底部一排长按钮压到几十 px 高
+    if (!ui || ui.id !== c.id || ui.rev !== c.rev || S.wide.has(c.id) || !tileMode(c) || c.plan) return;
     const min = innerWidth > 760 ? 90 : 60;
     const small = [...ui.root.querySelectorAll('.qstage .stage .frame')].some(f => {
       const r = f.getBoundingClientRect(), m = f.querySelector('img, video');
@@ -366,17 +367,30 @@ function picEl(c, x, ctx) {
     h('img', { src: p.thumb && !/\.svg$/i.test(p.src) ? p.thumb : p.src, alt: '', loading: 'lazy', decoding: 'async' }));
 }
 const hasPics = c => (c.options || []).some(x => x.pic || x.gen || x.media != null);
+/* 方案文字和卡里其余的视频 / 照片一起排：宽屏文字在左、媒体在右，手机上下排（拆成文字时不能把视频丢了） */
+function mixF(c, pick) {
+  const all = pick ? (c.media || []).filter(m => m.role !== 'src') : figIdx(c).map(i => c.media[i]);
+  const ar = all.length === 1 && all[0].w && all[0].h ? all[0].w / all[0].h : 16 / 9;
+  // 竖片只要窄窄一栏，横片和多张给得多一些，剩下的都给文字；挑图卡图是主角，图那栏给最宽
+  return pick ? 1.6 : all.length > 1 ? 1.1 : ar < 1 ? 0.5 : 0.9;
+}
+function planMix(c, ctx, st, pick) {
+  return h('div', { class: 'planmix', style: `--mixf:${mixF(c, pick)}fr` }, planEl(c, ctx), st);
+}
 function stageEl(c, ctx, o) {
-  if (!tileMode(c)) return mediaStage(c, ctx, o);
+  if (!tileMode(c)) { const st = mediaStage(c, ctx, o); return c.plan ? planMix(c, ctx, st, true) : st; }
   const has = figIdx(c).length > 0 || Boolean(c.code) || Boolean(c.plan);
   // 有示意图：宽屏上选项卡竖排在图右边，图拿满整个高度
   // 选项带图也进右栏：放不下时 sideFit 会加宽、排两列，再不行才挪到图下方（392 方案图被压到 112 px）
   // 选项多也进右栏：排到图下会把图压扁，兜底换回「大图 + 底部按钮」又会折成很多行
   const side = has && (c.options || []).length <= 9;
-  const fig = c.plan ? planEl(c, ctx) : figIdx(c).length ? mediaStage(c, ctx, o, figIdx(c)) : c.code ? codeEl(c) : null;
+  const fig = c.plan ? (figIdx(c).length ? planMix(c, ctx, mediaStage(c, ctx, o, figIdx(c))) : planEl(c, ctx))
+    : figIdx(c).length ? mediaStage(c, ctx, o, figIdx(c)) : c.code ? codeEl(c) : null;
   const q = h('div', { class: 'qstage' + (has ? ' has-fig' : '') + (side ? ' side' : '') + (hasPics(c) ? ' pics' : '') + (c.plan ? ' planq' : '') }, fig, tilesEl(c, ctx));
   // 方案没有固定宽高比（ars 为空）：求解器取放得下全部选项的最窄右栏，剩下的都给方案文字
-  if (side) sideFit(q, c.plan ? [] : figIdx(c).map(i => { const m = c.media[i]; return m.w && m.h ? m.w / m.h : 16 / 9; }));
+  // 方案 + 视频 / 照片：媒体只拿到方案旁边那一栏，按那一栏的宽度算它能画多大（九个长选项把右栏撑宽时，照片会被挤到几十 px）
+  if (side) sideFit(q, c.plan && !figIdx(c).length ? [] : figIdx(c).map(i => { const m = c.media[i]; return m.w && m.h ? m.w / m.h : 16 / 9; }),
+    c.plan ? mixF(c) : 0);
   return q;
 }
 /* 一组图在 W×H 里按最佳列数排，能画出的总面积（像素²） */
@@ -394,7 +408,7 @@ function gridArea(ars, W, H, gap, cap) {
 /* 按示意图和选项图的真实宽高比精算排法（10-18 用户：画面浪费太多，要按图的比例动态算）：
    右栏宽度 × 选项列数 × 选项图上限高度逐个试，再试「选项放下面」，
    挑「示意图实际画出的面积 + 选项图实际画出的面积」最大、且选项全放得下的那一种。 */
-function sideFit(q, ars) {
+function sideFit(q, ars, mix) {
   const wideQ = matchMedia('(min-width: 1100px)');
   const pics = q.classList.contains('pics');
   const tilesOf = () => q.querySelector('.tiles');
@@ -407,6 +421,16 @@ function sideFit(q, ars) {
       const w = Math.min(b.width, b.height * ar); a += w * w / ar; minH = Math.min(minH, w / ar);
     }
     return { a, minH };
+  };
+  // 方案 + 视频 / 照片（.planmix）：媒体只拿方案旁边那一栏；那一栏不到 160 px 就改成方案在上、媒体在下（九个长选项
+  // 把右栏撑到 759 px 时，照片会被挤成 22 px 宽）
+  const mixBox = (W, H) => {
+    const w = W - 20 - Math.max(Math.min(W, 380), W / (1 + mix));
+    return w >= 160 ? { w, h: H, stack: false } : { w: W, h: Math.max(0, (H - 16) / 2.2), stack: true };
+  };
+  const stackMix = () => {
+    const m = q.querySelector('.planmix');
+    if (m && mix) m.classList.toggle('stack', mixBox(m.clientWidth, m.clientHeight).stack);
   };
   const set = (k, v) => v == null ? q.style.removeProperty(k) : q.style.setProperty(k, v);
   const apply = o => {
@@ -424,6 +448,7 @@ function sideFit(q, ars) {
     let best = null, loose = null, scroll = null;
     const consider = (o, figW, figH) => {
       // 示意图满是小字，面积优先给它；选项图只要认得出：每张至少 PICMIN 高，够了再按半权重往大里加
+      if (mix) ({ w: figW, h: figH } = mixBox(figW, figH));
       const f = gridArea(ars, figW, figH, 16, CAP), p = pics ? picArea() : { a: 0, minH: Infinity };
       const a = f + 0.5 * p.a;
       if (p.minH < PICMIN) { if (!loose || a > loose.a * 1.01) loose = { ...o, a }; return; }  // 屏太小谁都够不着保底，就退回面积最大的
@@ -453,6 +478,7 @@ function sideFit(q, ars) {
       if (H - T - 18 > H * 0.3) consider(o, W, H - T - 18);
     }
     apply(best || loose || scroll || { side: false });
+    stackMix();
   };
   let w = 0, hh = 0;
   new ResizeObserver(() => { if (q.clientWidth === w && q.clientHeight === hh) return; w = q.clientWidth; hh = q.clientHeight; fit(); }).observe(q);
@@ -549,11 +575,12 @@ function watchSheet(root) {
 
 function infoEl(c, ctx, o) {
   return h('div', { class: 'info' },
-    h('div', { class: 'seq', title: '在 Claude 里说「' + pad(c.seq) + ' 返修 …」就能指这一张' }, pad(c.seq)),
+    h('div', { class: 'seq' + (pad(c.seq).length > 3 ? ' w4' : ''), title: '在 Claude 里说「' + pad(c.seq) + ' 返修 …」就能指这一张' }, pad(c.seq)),
     h('div', { class: 'tt' },
       o.compact ? null : h('span', { class: 'proj', style: `--pc:${pcol(c.project)[0]}` }, pname(c.project)),
-      // 长标题在手机上字号小一档：三位数编号挤窄了标题列，40 字的标题会折成四行（441）
-      h('h1', { class: [...(c.title || '')].length > 30 ? 'long' : null }, hl(c.title)),
+      // 长标题在手机上字号小一档：三位数编号挤窄了标题列，40 字的标题会折成四行（441）；
+      // 35 字以上再小一档（36 字的标题曾折成四行）
+      h('h1', { class: [...(c.title || '')].length > 34 ? 'long xlong' : [...(c.title || '')].length > 30 ? 'long' : null }, hl(c.title)),
       c.sub ? h('p', null, hl(c.sub)) : null,
       o.compact ? null : linksEl(c),
       o.review ? rvAnsEl(c) : null),
