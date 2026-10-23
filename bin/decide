@@ -378,7 +378,7 @@ def merge_links(*groups):
     return out[:12]
 
 
-def svg_plan(path):
+def svg_plan(path, loose=False):
     """字多的说明图（方案图、两栏完成卡、方案确认卡）拆成结构，网页用原生文字排：整张当图片缩放时，
     1200 宽画布里 18 号字在 1280 屏上只剩 7 px、手机 5 px。
     流程图 / 架构图这类字少、图形多的返回 None，照原样当示意图。配不配千问图另看 plan_pics。"""
@@ -402,12 +402,18 @@ def svg_plan(path):
     # 带连线 / 箭头的是流程图（几个框之间连着箭头），拆成文字会丢掉谁连谁，照原样贴
     if sum(1 for e in root.iter() if tag(e) in ("path", "line", "polyline")) >= 2 or "marker-end" in ET.tostring(root, "unicode"):
         return None
+    if any(tag(e) == "image" for e in root.iter()):  # 嵌了照片的拆成文字会丢照片
+        return None
 
     def attr(e, k):
         while e is not None:
             if e.get(k):
                 return e.get(k)
             e = parent.get(e)
+        return None
+
+    # 第二遍按坐标收框里所有的字，手机界面草图（标签多半居中）也会被压成文字，照原样贴
+    if loose and 3 * sum(1 for e in texts if attr(e, "text-anchor") == "middle") >= len(texts):
         return None
 
     def fsize(e):
@@ -432,14 +438,14 @@ def svg_plan(path):
 
     def join(els):
         """一句话在图上折成几行时接回一句，网页按宽度自己折。算续行的两种：比本条缩进，
-        或同一列、上一行以逗号收尾且挨得近（「…约 30 分钟，」「合计一小时」）。
+        或同一列、上一行以逗号 / 冒号收尾且挨得近（「…约 30 分钟，」「合计一小时」，「像雇了个编辑：」「你说…」）。
         以「·」/ 编号 / 「改：」这类小标签开头、换了字色的是另一条，不接"""
         out, prev, base = [], None, min((num(e, "x") for e in els), default=0)
         for e in els:
             t = txt(e)
             wrap = prev is not None and attr(e, "fill") == attr(prev, "fill") and not re.match(
                 f"[·•●▪◦*\\-–—]|[（(]?\\d+[.、)）]|[①-⑳]|[{cjk}]{{1,6}}[：:]", t) and (
-                num(e, "x") > base + 6 or abs(num(e, "x") - num(prev, "x")) <= 2 and re.search(r"[，、；,]$", out[-1])
+                num(e, "x") > base + 6 or abs(num(e, "x") - num(prev, "x")) <= 2 and re.search(r"[，、；,：:]$", out[-1])
                 and 0 < num(e, "y") - num(prev, "y") <= 1.9 * fsize(e))
             if wrap:
                 # 汉字接汉字、或挨着全角标点不加空格；汉字和数字 / 英文之间照中文排版留半角空格（「4 / 4 肉眼」）
@@ -460,6 +466,14 @@ def svg_plan(path):
             sec["color"] = hue(attr(head, "fill"))
         return sec
 
+    def moved(e):
+        e = parent.get(e)
+        while e is not None and e is not root:
+            if e.get("transform"):
+                return True
+            e = parent.get(e)
+        return False
+
     plan = {"title": "", "sub": "", "lines": [], "foot": [], "secs": []}
     cands = [g for g in root.iter() if tag(g) == "g" and any(tag(k) == "rect" for k in g)
              and sum(1 for k in g.iter() if tag(k) == "text" and txt(k)) >= 2]
@@ -471,7 +485,7 @@ def svg_plan(path):
         boxes = [r for r in boxes if not (num(r, "width") >= 0.95 * vb[0] and num(r, "height") >= 0.95 * vb[1])]
         for r in sorted(boxes, key=lambda r: (num(r, "y"), num(r, "x"))):
             x0, y0, x1, y1 = num(r, "x"), num(r, "y"), num(r, "x") + num(r, "width"), num(r, "y") + num(r, "height")
-            ts = [e for e in texts if parent.get(e) is root and e not in in_sec
+            ts = [e for e in texts if (parent.get(e) is root or loose and not moved(e)) and e not in in_sec
                   and x0 <= num(e, "x") <= x1 and y0 <= num(e, "y") <= y1]
             if len(ts) < 2:
                 continue
@@ -542,12 +556,16 @@ def svg_plan(path):
         else:
             plan["lines"] = join(sorted(top, key=order.get))
     # 板子收的上限（见 decide_server.clean_plan）；超了说明不是说明卡，照原样贴图
-    if len(plan["secs"]) > 12 or len(plan["lines"]) > 40 or len(plan["foot"]) > 8 or len(plan["sub"]) > 600 \
-            or any(len(s["lines"]) > 16 or any(len(x) > 400 for x in s["lines"]) for s in plan["secs"]) \
-            or any(len(x) > 400 for x in plan["lines"] + plan["foot"]):
-        return None
+    over = (len(plan["secs"]) > 12 or len(plan["lines"]) > 40 or len(plan["foot"]) > 8 or len(plan["sub"]) > 600
+            or any(len(s["lines"]) > 16 or any(len(x) > 400 for x in s["lines"]) for s in plan["secs"])
+            or any(len(x) > 400 for x in plan["lines"] + plan["foot"]))
+    if over or not (plan["secs"] or plan["lines"]):
+        # 框里的编号列表包在只管字号字色的 <g> 里时（两栏卡），只认根上的字会把列表全挤进结尾、超上限：
+        # 再把 <g> 里的字也按坐标归框试一次（带 transform 的坐标不可信，不收）。只在第一遍失败时用，
+        # 第一遍能拆的卡（框里还有 A / B / C 小标题的）照旧
+        return None if loose else svg_plan(path, loose=True)
     plan["title"] = plan["title"][:200]
-    return plan if plan["secs"] or plan["lines"] else None
+    return plan
 
 
 def plan_pics(plan):
