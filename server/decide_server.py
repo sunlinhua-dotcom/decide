@@ -5,7 +5,10 @@
 纯标准库，SQLite 一个文件。前面挂 Caddy / nginx 做 HTTPS 时，见 deploy/ 里的示例。
 所有配置走环境变量，见 .env.example。
 """
+import array
+import base64
 import hmac
+import io
 import json
 import mimetypes
 import os
@@ -23,6 +26,7 @@ import math
 import subprocess
 import tempfile
 import unicodedata
+import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
@@ -43,12 +47,17 @@ COOKIE = "decide_k"
 COOKIE_MAX_AGE = 400 * 24 * 3600
 COOKIE_SECURE = os.environ.get("DECIDE_COOKIE_SECURE", "1" if PUBLIC_BASE.startswith("https://") else "0") == "1"
 MAX_UPLOAD = 300 * 1024 * 1024
-# 按住说话（10-21）：OpenAI 兼容的转写接口（/v1/audio/transcriptions），没配就不显示话筒
+# 按住说话：OpenAI 兼容的转写接口（/v1/audio/transcriptions），没配就不显示话筒。
+# 地址以 /chat/completions 结尾：按对话接口送音频（input_audio），热词放 system——Qwen3-ASR 官方就这么给上下文
 ASR_URL = os.environ.get("DECIDE_ASR_URL", "")
 ASR_MODEL = os.environ.get("DECIDE_ASR_MODEL", "whisper-1")
+ASR_CHAT = ASR_URL.rstrip("/").endswith("/chat/completions")
+# 热词：中英混说时英文专名常被写成同音中文（「Opus 5.5」→「OPPOs五点五」），给一份热词表就认得对。
+# 手填的（逗号 / 顿号分隔）+ 板上近 30 天卡片里常见的英文词
+ASR_HOTWORDS = [w.strip() for w in re.split(r"[,，、\n]", os.environ.get("DECIDE_ASR_HOTWORDS", "")) if w.strip()]
 VOICE_MAX = 8 << 20
 CHAT_WAIT = 900  # 板上点「在对话里说」后，多久没在对话里说就提醒
-# 已定搜索「按意思找」（10-21）：OpenAI 兼容的对话接口；key 只从文件读，不进代码。没配就只有模糊搜索
+# 已定搜索「按意思找」：OpenAI 兼容的对话接口；key 只从文件读，不进代码。没配就只有模糊搜索
 LLM_URL = os.environ.get("DECIDE_LLM_URL", "")
 LLM_MODEL = os.environ.get("DECIDE_LLM_MODEL", "")
 LLM_KEY_FILE = os.environ.get("DECIDE_LLM_KEY_FILE", "")
@@ -362,8 +371,73 @@ def multipart(fields, files):
     return b"".join(out), f"multipart/form-data; boundary={b}"
 
 
+HOT_RE = re.compile(r"(?<![A-Za-z0-9])[A-Za-z][A-Za-z0-9]*(?:[.+-][A-Za-z0-9]+)*(?: \d+(?:\.\d+)+)?")
+HOT_SKIP = set("""a an and are as at be but by can do for from has have how if in into is it its me my no not of on or our so
+that the then this to up us was we what when which who why will with you your all any new one two yes ok id url http https
+www com top png jpg jpeg svg mp4 mov gif webp pdf html css js json md txt zip px dpi fps sec min ver""".split())
+HOT_CACHE = {"at": 0.0, "words": []}
+
+
+def hotwords():
+    """热词表：手填的在前，再补板上近 30 天卡片（标题、说明、选项、意见）里至少两张卡说过的英文词，按出现的卡数排，
+    整串不超过 600 字。十分钟算一次。"""
+    if time.time() - HOT_CACHE["at"] < 600:
+        return HOT_CACHE["words"]
+    cnt, shape = {}, {}
+    with lock:
+        rows = db.execute("SELECT spec, answer FROM cards WHERE updated > ? ORDER BY updated DESC LIMIT 3000",
+                          (time.time() - 30 * 86400,)).fetchall()
+    for spec, answer in rows:
+        try:
+            s, a = json.loads(spec or "{}"), json.loads(answer or "{}") or {}
+        except ValueError:
+            continue
+        text = " ".join([s.get("title") or "", s.get("sub") or "", str(a.get("note") or "")]
+                        + [f"{o.get('label', '')} {o.get('desc', '')}" for o in s.get("options") or [] if isinstance(o, dict)])
+        seen = set()
+        for m in HOT_RE.finditer(text):
+            w = m.group(0)
+            if w[0].islower() and " " in w:  # 版本号只跟专名走（「Opus 5.5」），「seed 3」这种不算
+                w = w.split(" ")[0]
+            k = w.lower()
+            if len(w) < 2 or k in HOT_SKIP or k in seen or k.isdigit():
+                continue
+            seen.add(k)
+            cnt[k] = cnt.get(k, 0) + 1
+            shape.setdefault(k, {})[w] = shape.get(k, {}).get(w, 0) + 1
+    words, have, size = [], set(), 0
+    for w in ASR_HOTWORDS + [max(shape[k], key=shape[k].get) for k in sorted(cnt, key=lambda k: -cnt[k]) if cnt[k] >= 2]:
+        if w.lower() in have or size + len(w) > 600:
+            continue
+        have.add(w.lower())
+        words.append(w)
+        size += len(w) + 1
+    HOT_CACHE.update(at=time.time(), words=words)
+    return words
+
+
+def wav_level(data):
+    """16 位单声道 wav 的时长、峰值、均方根（dBFS）。读不了就返回 None。ffmpeg 写的头里带 LIST 块，不能按 44 字节切"""
+    try:
+        with wave.open(io.BytesIO(data)) as w:
+            if w.getsampwidth() != 2:
+                return None
+            rate, frames = w.getframerate(), w.readframes(w.getnframes())
+    except (wave.Error, EOFError):
+        return None
+    pcm = array.array("h", frames[:len(frames) // 2 * 2])
+    if sys.byteorder != "little":
+        pcm.byteswap()
+    if not pcm:
+        return 0.0, -120.0, -120.0
+    peak = max(abs(min(pcm)), max(pcm)) or 1
+    rms = math.sqrt(sum(x * x for x in pcm[::4]) / len(pcm[::4])) or 1
+    return len(pcm) / rate, 20 * math.log10(peak / 32768), 20 * math.log10(rms / 32768)
+
+
 def transcribe(raw, ctype):
-    """浏览器录的一段音（webm / mp4 / ogg）→ ffmpeg 转 16k 单声道 wav → 转写接口 → 文字。临时文件转完即删。"""
+    """浏览器录的一段音（webm / mp4 / ogg）→ ffmpeg 转 16k 单声道 wav → 转写接口 → 文字。临时文件转完即删。
+    录进去的是静音（话筒被占、输入设备选错）直接报，不送去转写：不带上下文的模型对着静音会编出一整句话。"""
     name, data = "voice.wav", None
     with tempfile.TemporaryDirectory(prefix="decide-voice-") as td:
         src, wav = os.path.join(td, "in"), os.path.join(td, "in.wav")
@@ -378,7 +452,20 @@ def transcribe(raw, ctype):
             name, data = "voice." + (ctype.split("/")[-1].split(";")[0] or "webm"), raw
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
             raise Bad(400, "这段录音读不了，再说一次")
-    body, ct = multipart({"model": ASR_MODEL, "response_format": "json"}, {"file": (name, "audio/wav" if name.endswith(".wav") else ctype, data)})
+    lv = wav_level(data) if name.endswith(".wav") else None
+    if lv and lv[1] < -50:
+        sys.stderr.write(f"voice {lv[0]:.1f}s 峰值 {lv[1]:.0f} dB：静音，没送转写\n")
+        raise Bad(422, "没录到声音：话筒可能被别的程序占着，或者系统里选错了输入设备")
+    ctx = "、".join(hotwords())
+    t0 = time.time()
+    if ASR_CHAT:
+        audio = {"type": "input_audio", "input_audio": {"data": base64.b64encode(data).decode(), "format": "wav" if name.endswith(".wav") else name.rsplit(".", 1)[-1]}}
+        body = json.dumps({"model": ASR_MODEL, "temperature": 0, "max_tokens": 1024,
+                           "messages": ([{"role": "system", "content": ctx}] if ctx else []) + [{"role": "user", "content": [audio]}]}).encode()
+        ct = "application/json"
+    else:  # 标准转写接口：热词走 prompt（Whisper 一类就是这么给词表的）
+        body, ct = multipart({"model": ASR_MODEL, "response_format": "json", "temperature": "0", **({"prompt": ctx} if ctx else {})},
+                             {"file": (name, "audio/wav" if name.endswith(".wav") else ctype, data)})
     req = urllib.request.Request(ASR_URL, data=body, method="POST", headers={"Content-Type": ct})
     try:
         with urllib.request.urlopen(req, timeout=45) as r:
@@ -386,7 +473,14 @@ def transcribe(raw, ctype):
     except (urllib.error.URLError, OSError, ValueError) as e:
         sys.stderr.write(f"ASR 失败：{e!r}\n")
         raise Bad(502, "识别服务没响应，稍后再试")
-    return re.sub(r"^\s*language\s+[^<\n]*<asr_text>\s*", "", str(j.get("text") or ""), flags=re.I).strip()
+    out = str((j.get("choices") or [{}])[0].get("message", {}).get("content") or "") if ASR_CHAT else str(j.get("text") or "")
+    m = re.match(r"^\s*language\s+([^<\n]*)<asr_text>\s*", out, flags=re.I)
+    lang = m.group(1).strip() if m else ""
+    text = out[m.end():].strip() if m else out.strip()
+    if ctx and text.strip(" 。.") == ctx:  # 有的模型对着几乎没声的录音把热词原样念回来
+        text = ""
+    sys.stderr.write(f"voice {lv[0] if lv else 0:.1f}s 峰值 {lv[1] if lv else 0:.0f} dB → {lang or '?'} {len(text)} 字，{time.time() - t0:.1f} s\n")
+    return text
 
 
 # ---------------- 已定搜索 ----------------
@@ -555,7 +649,7 @@ def get_card(cid):
     return r
 
 
-# ---------------- 派活入口（10-20）：网页上交文字 + 附件，转给分拣台 ----------------
+# ---------------- 派活入口：网页上交文字 + 附件，转给分拣台 ----------------
 INTAKE_CONF = os.environ.get("DECIDE_INTAKE_CONF", os.path.join(HOME, "intake.json"))
 INTAKE_UP = os.environ.get("DECIDE_INTAKE_UP", os.path.join(HOME, "intake-up"))
 INTAKE_MAX = 95 * 1024 * 1024  # 浏览器经 Cloudflare 上传，免费档单个请求上限 100 MB
@@ -1034,7 +1128,7 @@ class H(BaseHTTPRequestHandler):
         self.send(200, {"ok": True, "n": len(ids)})
 
     def session_state(self):
-        """钩子用（10-19）：本会话还有哪些待定卡、哪些答了还没送到会话、有没有监听在跑。
+        """钩子用：本会话还有哪些待定卡、哪些答了还没送到会话、有没有监听在跑。
         会话说「在等你定」时其实已经答了，多半是监听死了或刚答完；钩子据此补送、提醒重挂。"""
         sess = self.q().get("session") or ""
         if not sess:
@@ -1145,7 +1239,7 @@ class H(BaseHTTPRequestHandler):
                 db.execute("UPDATE cards SET status='pending', answer=NULL, updated=?, rev=rev+1, acked=0 WHERE id=?",
                            (now, cid))
             elif act == "redo":
-                # 已定历史里点「返修」（10-21）：卡记成「返修 + 意见」，原答案留底，重新交给推卡的会话
+                # 已定历史里点「返修」：卡记成「返修 + 意见」，原答案留底，重新交给推卡的会话
                 if r["status"] == "pending":
                     raise Bad(409, "这张卡还在待定，直接在板上定")
                 if spec.get("kind") == "perm":

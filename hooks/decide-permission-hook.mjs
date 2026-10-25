@@ -23,6 +23,14 @@ import path from 'node:path';
 
 import { decideConfig, openCards, permissionCards, sessionContext } from './decide-channel.mjs';
 
+// 隐私项目：会话目录落在 ~/.claude/private-roots 列的根目录下（每行一个），整个钩子静默退出，什么都不外发
+try {
+  const roots = fs.readFileSync(path.join(os.homedir(), '.claude', 'private-roots'), 'utf8')
+    .split('\n').map((s) => s.trim().replace(/\/+$/, '')).filter((s) => s && !s.startsWith('#'));
+  const dirs = [process.env.CLAUDE_PROJECT_DIR, process.cwd()].filter(Boolean);
+  if (dirs.some((d) => roots.some((r) => d === r || d.startsWith(r + '/')))) process.exit(0);
+} catch (_) {}
+
 const CONFIG_FILE = process.env.DECIDE_HOOK_CONFIG || path.join(os.homedir(), '.config', 'decide', 'hooks.json');
 const DEFAULTS = { enabled: true, waitSec: 1800, decide: true };
 const TRANSCRIPT_POLL_MS = 1000;

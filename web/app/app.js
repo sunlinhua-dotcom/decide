@@ -315,7 +315,7 @@ const canRevise = (c, x) => !isPerm(c) && !c.multi && c.status === 'pending' && 
 function reviseBtn(c, x, ctx, cls) {
   return h('button', { class: cls || 'rv', type: 'button', title: `选「${x.label}」并写哪里要改`, onclick: e => { e.stopPropagation(); revise(c, x.id, ctx); } }, '要改…');
 }
-// 「要改…」旁边一个话筒（10-21）：按住说话，松开把字填进这个选项的意见框；返修 / 要改这类兜底项只放话筒
+// 「要改…」旁边一个话筒：按住说话，松开把字填进这个选项的意见框；返修 / 要改这类兜底项只放话筒
 function rvGroup(c, x, ctx, rv) {
   const vm = c.status === 'pending' && !c.multi && !isPerm(c) && (rv || x.style === 'bad');
   const mic = vm ? micBtn(voNote(c, x.id, cur => revise(cur, x.id, ctx)), `说「${x.label}」哪里要改：按住说话，松开变成文字`) : null;
@@ -851,7 +851,7 @@ function doneRow(c, order, hits) {
   const deliver = c.status === 'cancelled' || isPerm(c) ? '' : c.acked ? '已交给 Claude' : c.session ? 'Claude 还没收到' : '';
   const meta = [pname(c.project), ago(c.updated), a.device, deliver].filter(Boolean).join(' · ');
   const mk = t => hits && hits.length ? markHits(t, hits) : hl(t);
-  // 整行点开重看（10-21）：只看不问意见，要返修在里面点
+  // 整行点开重看：只看不问意见，要返修在里面点
   const open = () => { S.rvOrder = order; go('/done/' + c.id); };
   return h('div', { class: 'row', role: 'link', tabindex: '0', title: '点开重看', onclick: open, onkeydown: e => { if (e.key === 'Enter' && e.target === e.currentTarget) { e.preventDefault(); open(); } } },
     h('span', { class: 'n s' }, pad(c.seq)),
@@ -1065,7 +1065,7 @@ function rvKey(e) {
   else if ((e.key === 'o' || e.key === ' ') && c && (c.media || []).length) { e.preventDefault(); openLb(c, 0, $('#main')._ctx); }
 }
 
-/* ---------- 派活：文字 + 附件交给分拣台（10-20） ---------- */
+/* ---------- 派活：文字 + 附件交给分拣台 ---------- */
 const PH = { key: '', text: '', chat: '', note: '', files: [], recent: [], info: null, busy: false, active: 0, seq: 0 };
 const PH_LABEL = { sending: '交件中…', submitted: '网关已收，排队中', queued: '已交分拣台', failed: '没交出去' };
 function phKey() { const a = new Uint8Array(8); crypto.getRandomValues(a); return [...a].map(x => x.toString(16).padStart(2, '0')).join(''); }
@@ -1384,7 +1384,7 @@ function drawLbGrid(c, media) {
   media.forEach((m, k) => {
     const o = optOf.get(k);
     let el;
-    if (m.kind === 'video') el = h('video', { src: m.src + '#t=0.1', controls: true, playsinline: true, preload: 'metadata', muted: true });
+    if (m.kind === 'video') el = h('video', { src: m.src + '#t=0.1', controls: true, playsinline: true, preload: 'metadata' });
     else {
       el = h('img', { src: m.src, alt: m.label || '' });
       if (m.orig && m.orig !== m.src) { const hi = new Image(); hi.onload = () => { if (el.isConnected) el.src = m.orig; }; hi.src = m.orig; }
@@ -1446,6 +1446,9 @@ async function voPress(btn, deliver, tap) {
   if (VO.busy) return;
   if (VO.rec || VO.btn) { if (VO.mode === 'toggle') voStop(); return; }
   VO.btn = btn; VO.deliver = deliver; VO.mode = tap ? 'toggle' : 'hold'; VO.pressAt = Date.now(); VO.cancel = false;
+  // 8 秒还没打开（权限框没点、别的程序占着话筒）就收掉，不让面板一直停在「打开话筒…」、之后再按都没反应
+  clearTimeout(VO.openT);
+  VO.openT = setTimeout(() => { if (VO.btn === btn && !VO.rec && !VO.busy) { voReset(); toast('话筒 8 秒还没打开：看看地址栏的话筒权限，或者是不是会议、录音软件占着话筒'); } }, 8000);
   try { const AC = window.AudioContext || window.webkitAudioContext; if (AC && !VO.ac) { VO.ac = new AC(); VO.ac.resume?.(); } } catch {}
   voPlace(btn);
   const up = () => {
@@ -1458,29 +1461,38 @@ async function voPress(btn, deliver, tap) {
   let stream;
   try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
   catch (e) {
-    up(); VO.btn = null; VO.mode = ''; voLevelOff(); document.body.classList.remove('voicing');
-    return toast(e.name === 'NotAllowedError' ? '没拿到话筒权限：在浏览器里允许使用麦克风后再按' : '打不开话筒：' + (e.message || e.name));
+    up(); voReset();
+    return toast(e.name === 'NotAllowedError' ? '没拿到话筒权限：在浏览器里允许使用麦克风后再按'
+      : e.name === 'NotReadableError' ? '话筒被别的程序占着（会议、录音软件），关掉再按'
+      : e.name === 'NotFoundError' ? '没找到话筒：插上耳机，或在系统设置里选好输入设备' : '打不开话筒：' + (e.message || e.name));
   }
-  if (VO.btn !== btn || VO.cancel) { stream.getTracks().forEach(t => t.stop()); VO.btn = null; VO.mode = ''; voLevelOff(); document.body.classList.remove('voicing'); return; }
+  if (VO.btn !== btn || VO.cancel) { stream.getTracks().forEach(t => t.stop()); if (VO.btn === btn) voReset(); return; }
   const mime = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/ogg;codecs=opus', 'audio/webm'].find(m => MediaRecorder.isTypeSupported?.(m)) || '';
   let rec;
   try { rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); }
-  catch (e) { stream.getTracks().forEach(t => t.stop()); VO.btn = null; VO.mode = ''; voLevelOff(); document.body.classList.remove('voicing'); return toast('这个浏览器录不了音：' + (e.message || e.name)); }
+  catch (e) { stream.getTracks().forEach(t => t.stop()); voReset(); return toast('这个浏览器录不了音：' + (e.message || e.name)); }
+  clearTimeout(VO.openT);
   Object.assign(VO, { rec, stream, chunks: [], t0: Date.now() });
   rec.ondataavailable = e => { if (e.data && e.data.size) VO.chunks.push(e.data); };
-  rec.onstop = () => voSend(rec.mimeType || mime || 'audio/webm');
+  rec.onstop = () => { if (VO.rec === rec) voSend(rec.mimeType || mime || 'audio/webm'); };
   rec.start(250);
+  try { navigator.vibrate?.(20); } catch {}  // 手机上震一下：真开始录了
   btn.classList.add('on'); document.body.classList.add('voicing'); voPaint(); voLevel(stream);
   VO.timer = setInterval(() => { voPaint(); if (Date.now() - VO.t0 >= 60000) voStop(); }, 250);
 }
+function voReset() { clearTimeout(VO.openT); VO.btn = null; VO.mode = ''; voLevelOff(); document.body.classList.remove('voicing'); }
 function voStop(cancel) {
   VO.cancel = !!cancel;
   const rec = VO.rec;
-  if (!rec) { if (cancel) { VO.btn = null; VO.mode = ''; voLevelOff(); document.body.classList.remove('voicing'); } return; }
+  if (!rec) {  // 话筒还没打开就点了「说完了」：这时说的话没录上，收掉面板，免得它打开后接着录、再按都没反应
+    if (VO.btn && !VO.busy) { voReset(); if (!cancel) toast('话筒还没打开就结束了：等面板上出现「在听…」再开口'); }
+    return;
+  }
   clearInterval(VO.timer); VO.timer = null; voLevelOff();
   VO.btn?.classList.remove('on');
   try { if (rec.state !== 'inactive') rec.stop(); else voSend(rec.mimeType || 'audio/webm'); } catch { voSend(rec.mimeType || 'audio/webm'); }
   VO.stream?.getTracks().forEach(t => t.stop());
+  setTimeout(() => { if (VO.rec === rec) voSend(rec.mimeType || 'audio/webm'); }, 2500);  // 个别浏览器停了录音不发 onstop，自己送
 }
 async function voSend(type) {
   const blob = new Blob(VO.chunks, { type: type.split(';')[0] }), deliver = VO.deliver, dur = Date.now() - VO.t0;
@@ -1491,15 +1503,16 @@ async function voSend(type) {
     return;
   }
   VO.busy = true; voPaint();
+  const ab = new AbortController(), abT = setTimeout(() => ab.abort(), 80000);
   try {
-    const r = await fetch('/api/voice', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': blob.type || 'audio/webm' }, body: blob });
+    const r = await fetch('/api/voice', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': blob.type || 'audio/webm' }, body: blob, signal: ab.signal });
     if (r.status === 401) { location.reload(); return; }
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error || '识别失败（' + r.status + '）');
     const t = String(j.text || '').trim();
     if (!t) toast('没听清，再说一次'); else deliver(t);
-  } catch (e) { toast(e.message || '识别失败'); }
-  finally { VO.busy = false; VO.btn = null; document.body.classList.remove('voicing'); voPaint(); }
+  } catch (e) { toast(e.name === 'AbortError' ? '转文字超时了，再说一次' : e.message || '识别失败'); }
+  finally { clearTimeout(abT); VO.busy = false; VO.btn = null; document.body.classList.remove('voicing'); voPaint(); }
 }
 function voPaint() {
   let el = $('#vo');
@@ -1516,7 +1529,7 @@ function voPaint() {
   const s = Math.floor((Date.now() - VO.t0) / 1000);
   $('.vt', el).textContent = VO.busy ? '正在转文字…' : VO.rec ? '在听…' : '打开话筒…';
   $('.vs', el).textContent = VO.busy || !VO.rec ? '' : `${Math.floor(s / 60)}:${pad(s % 60)} / 1:00`;
-  $('.vhint', el).textContent = VO.busy ? '转好就填进意见框，不会自动提交' : VO.mode === 'hold' ? '松手就结束' : '说完点「说完了」' + (hover ? '，或按空格 / 回车' : '');
+  $('.vhint', el).textContent = VO.busy ? '转好就填进意见框，不会自动提交' : !VO.rec ? '等出现「在听…」再开口' : VO.mode === 'hold' ? '松手就结束' : '说完点「说完了」' + (hover ? '，或按空格 / 回车' : '');
   $('.vlv', el).hidden = VO.busy;
   $('.vdone', el).hidden = VO.busy || VO.mode !== 'toggle';
   $('.vx', el).hidden = VO.busy;
@@ -1557,9 +1570,15 @@ function voLevelOff() {
   const bar = $('#vo .vlv i'); if (bar) bar.style.transform = '';
 }
 window.addEventListener('keydown', e => {
-  if (VO.busy || !(VO.rec || VO.btn)) return;
+  if (e.isComposing || e.keyCode === 229) return;
+  if (VO.busy) {  // 正在转文字：回车别把意见框按旧字提交掉，刚说的还没填进来
+    if (e.key === 'Enter' && e.target.matches?.('textarea.note')) { e.preventDefault(); e.stopImmediatePropagation(); toast('正在转文字，填进来再提交'); }
+    return;
+  }
+  if (!(VO.rec || VO.btn)) return;
   if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); voStop(true); }
-  else if ((e.key === ' ' || e.key === 'Enter') && VO.mode === 'toggle' && !e.target.matches('textarea, input')) { e.preventDefault(); e.stopImmediatePropagation(); voStop(); }
+  // 意见框有焦点时也算结束：以前回车会先把卡按旧字提交、刚说的被丢，空格会打进框里而录音不停
+  else if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); e.stopImmediatePropagation(); if (VO.mode === 'toggle') voStop(); }
 }, true);
 // 识别出来的字接在已经写的意见后面；意见框还没开就先打开再填
 function voText(prev, t) { prev = String(prev || '').replace(/\s+$/, ''); return prev ? prev + (/[，。！？、,.!?;；:：]$/.test(prev) ? '' : '，') + t : t; }
@@ -1580,7 +1599,12 @@ function voNote(c, oid, open) {
     }
     S.note = { id: c.id, text }; S.voQuiet = true;
     open(cur);
-    if (!S.note || !S.note.oid) { S.note = null; S.voQuiet = false; toast('这张已经定了，写不了意见'); return; }
+    if (!S.note || !S.note.oid) {  // 卡在说话时被定了 / 撤了：刚说的别丢，复制下来
+      S.note = null; S.voQuiet = false;
+      navigator.clipboard?.writeText(t).catch(() => {});
+      toast(`这张已经定了，刚说的已复制：「${t.length > 30 ? t.slice(0, 30) + '…' : t}」`);
+      return;
+    }
     flash();
   };
 }

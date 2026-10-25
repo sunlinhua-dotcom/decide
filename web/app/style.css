@@ -542,7 +542,7 @@ pre code { white-space: pre; }
 }
 @media (prefers-reduced-motion: reduce) { .plan-pic.wait { animation: none; } }
 
-/* 派活（10-20）：文字 + 附件交给分拣台 */
+/* 派活：文字 + 附件交给分拣台 */
 .right a[hidden] { display: none; }
 .ph { max-width: 760px; }
 .ph-sub { color: var(--ink-2); margin: -8px 0 20px; max-width: 40em; }
@@ -602,7 +602,7 @@ pre code { white-space: pre; }
   .ph-item > .x, .ph-item > span:last-child { grid-column: 2; grid-row: 1 / span 2; align-self: center; }
 }
 
-/* 已定：整行点开重看；重看页只看不问，点「返修」才出意见框（10-21） */
+/* 已定：整行点开重看；重看页只看不问，点「返修」才出意见框 */
 .page h2.h small { margin-left: 14px; font-family: var(--sans); font-size: 13px; color: var(--ink-3); }
 .row[role=link] { cursor: pointer; transition: background .15s; }
 .row[role=link]:hover { background: var(--paper-2); }
@@ -660,7 +660,7 @@ pre code { white-space: pre; }
 .tt .proj::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--pc, var(--line)); margin-right: 7px; vertical-align: 1px; }
 @media (max-width: 760px) { .tabs { gap: 8px; padding: 8px 0 8px; } .tab.has { padding: 4px 12px; } }
 
-/* 按住说话（10-21）：每个「要改…」「在这里写意见」「返修」旁一个话筒，意见框里也有 */
+/* 按住说话：每个「要改…」「在这里写意见」「返修」旁一个话筒，意见框里也有 */
 .mic { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 31px; min-width: 31px; padding: 0 8px; border-radius: 999px; border: 1px solid var(--line); background: #fff; color: var(--ink-2); font-size: 13px; line-height: 1; white-space: nowrap; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; transition: color .15s, border-color .15s, background .15s; }
 .mic-i { width: 15px; height: 15px; flex: none; background: currentColor; -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-2.08A7 7 0 0 0 19 12h-2z'/></svg>") center / contain no-repeat; mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-2.08A7 7 0 0 0 19 12h-2z'/></svg>") center / contain no-repeat; }
 .mic:hover, .mic.on { color: var(--red); border-color: var(--red); }
@@ -697,7 +697,7 @@ body.voicing #vo { display: flex; }
 @keyframes noteflash { 0% { box-shadow: 0 0 0 4px #fde68a; background: #fffbe6; } 100% { box-shadow: 0 0 0 0 transparent; } }
 @media (max-width: 760px) { .tilew > .rvg .mic, .acts .chats .mic, .nbtns .mic { height: 40px; min-width: 40px; padding: 0 12px; } }
 
-/* 已定搜索（10-21）：边打边搜，回车按意思找（对话模型） */
+/* 已定搜索：边打边搜，回车按意思找（对话模型） */
 .dhead { display: flex; align-items: center; gap: 20px; margin-bottom: 10px; flex-wrap: wrap; }
 .dhead h2.h { margin-bottom: 0; }
 .sbox { flex: 1; min-width: min(100%, 280px); display: flex; align-items: center; gap: 8px; }
@@ -711,7 +711,7 @@ body.voicing #vo { display: flex; }
 .empty-s { color: var(--ink-3); padding: 18px 0; }
 @media (max-width: 760px) { .sq { font-size: 16px; } .dhead { gap: 10px; } }
 
-/* 「在对话里说」提醒条（10-21） */
+/* 「在对话里说」提醒条 */
 #cw { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding: 12px var(--pad); background: var(--red); color: #fff; font-size: 15px; line-height: 1.5; word-break: keep-all; overflow-wrap: break-word; }
 #cw[hidden] { display: none; }
 #cw .cw-t b { font-weight: 700; }

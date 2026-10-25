@@ -1,10 +1,11 @@
-"""已定搜索、按住说话、「在对话里说」提醒的测试（10-21）。
+"""已定搜索、按住说话、「在对话里说」提醒的测试。
 
 python3 -m unittest discover -s tests -v
 只用标准库；起一个临时 decide 服务，再起两个假服务（语音识别、对话模型）顶替真接口，跑完就删。
 """
 import io
 import json
+import math
 import os
 import shutil
 import socket
@@ -39,6 +40,11 @@ class Fake(BaseHTTPRequestHandler):
         if self.path == "/asr":
             FAKE["asr"].append((self.headers.get("Content-Type"), raw))
             out = {"text": "language Chinese<asr_text>背景再暗一点"}
+        elif self.path == "/asr/v1/chat/completions":
+            j = json.loads(raw)
+            FAKE["asr"].append(("chat", j))
+            audio = j["messages"][-1]["content"][0]["input_audio"]
+            out = {"choices": [{"message": {"content": FAKE.get("chat_reply") or f"language Chinese<asr_text>收到 {audio['format']}"}}]}
         else:
             j = json.loads(raw)
             FAKE["llm"].append((self.headers.get("Authorization"), j))
@@ -52,14 +58,19 @@ class Fake(BaseHTTPRequestHandler):
         self.wfile.write(b)
 
 
-def silence_wav(sec=1.0):
+def silence_wav(sec=1.0, amp=0):
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
         w.setframerate(16000)
-        w.writeframes(b"\0\0" * int(16000 * sec))
+        w.writeframes(b"".join(int(amp * math.sin(i / 16000 * 2 * math.pi * 440)).to_bytes(2, "little", signed=True)
+                               for i in range(int(16000 * sec))))
     return buf.getvalue()
+
+
+def tone_wav(sec=1.0):
+    return silence_wav(sec, 9000)
 
 
 class Base(unittest.TestCase):
@@ -241,13 +252,25 @@ class OnTest(Base):
         self.assertTrue(st["search_ai"])
 
     def test_voice(self):
-        code, j = self.req("/api/voice", "POST", raw=silence_wav(), ctype="audio/wav")
+        for _ in range(2):  # 两张卡都说过的英文词进热词表
+            self.card("交给 Opus 5.5 看，再用 iMessage 发")
+        code, j = self.req("/api/voice", "POST", raw=tone_wav(), ctype="audio/wav")
         self.assertEqual(code, 200, j)
         self.assertEqual(j["text"], "背景再暗一点")  # 去掉了 language 前缀
         ctype, body = FAKE["asr"][-1]
         self.assertIn("multipart/form-data", ctype)
         self.assertIn(b"qwen3-asr", body)
+        self.assertIn('name="temperature"\r\n\r\n0'.encode(), body)
+        self.assertIn("Opus 5.5".encode(), body)  # 热词走 prompt
+        self.assertIn("iMessage".encode(), body)
         self.assertEqual(self.req("/api/voice", "POST", raw=b"", ctype="audio/webm")[0], 400)
+
+    def test_voice_silent(self):
+        n = len(FAKE["asr"])
+        code, j = self.req("/api/voice", "POST", raw=silence_wav(), ctype="audio/wav")
+        self.assertEqual(code, 422, j)  # 静音不送转写：不带上下文的模型对着静音会编一整句话
+        self.assertIn("没录到声音", j["error"])
+        self.assertEqual(len(FAKE["asr"]), n)
 
     def test_search_ai(self):
         a = self.card("吊顶面板比例")
@@ -260,6 +283,47 @@ class OnTest(Base):
         self.assertEqual(body["model"], "chat-model")
         self.assertEqual(body["response_format"], {"type": "json_object"})
         self.assertIn("吊顶面板比例", body["messages"][0]["content"])
+
+
+class ChatAsrTest(Base):
+    """转写地址是对话接口（Qwen3-ASR 这类）：音频按 input_audio 送，热词放 system；手填热词排在前面。"""
+
+    @classmethod
+    def env_for(cls, tmp):
+        cls.fake = ThreadingHTTPServer(("127.0.0.1", 0), Fake)
+        threading.Thread(target=cls.fake.serve_forever, daemon=True).start()
+        u = f"http://127.0.0.1:{cls.fake.server_address[1]}"
+        return {"DECIDE_ASR_URL": u + "/asr/v1/chat/completions", "DECIDE_ASR_MODEL": "qwen3-asr",
+                "DECIDE_ASR_HOTWORDS": "Codex、GLM"}
+
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        cls.fake.shutdown()
+
+    def test_chat_voice(self):
+        for _ in range(2):
+            self.card("Astra 和 Opus 5.5 谁来改 MY6")
+        self.card("只说过一次的 Zebra")
+        FAKE["chat_reply"] = ""
+        code, j = self.req("/api/voice", "POST", raw=tone_wav(), ctype="audio/wav")
+        self.assertEqual(code, 200, j)
+        self.assertEqual(j["text"], "收到 wav")
+        kind, body = FAKE["asr"][-1]
+        self.assertEqual(kind, "chat")
+        self.assertEqual(body["temperature"], 0)
+        ctx = body["messages"][0]["content"]
+        self.assertEqual(body["messages"][0]["role"], "system")
+        self.assertTrue(ctx.startswith("Codex、GLM、"), ctx)
+        for w in ("Astra", "Opus 5.5", "MY6"):
+            self.assertIn(w, ctx)
+        self.assertNotIn("Zebra", ctx)  # 只有一张卡说过的不收
+
+    def test_chat_voice_empty(self):
+        FAKE["chat_reply"] = "language None<asr_text>"
+        code, j = self.req("/api/voice", "POST", raw=tone_wav(), ctype="audio/wav")
+        FAKE["chat_reply"] = ""
+        self.assertEqual((code, j["text"]), (200, ""))
 
 
 if __name__ == "__main__":
