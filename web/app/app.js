@@ -80,7 +80,7 @@ async function loadState() {
   S.seen = new Set(j.cards.filter(c => c.status === 'pending').map(c => c.id));
   if (fresh.length) startFlash();
   S.loaded = true;
-  render();
+  if (zoomHold()) ZOOM.pending = true; else render();
 }
 function setConn(s) { const el = $('#conn'); el.className = 'conn ' + s; }
 async function pollLoop() {
@@ -363,8 +363,10 @@ function picEl(c, x, ctx) {
   const ar = p.w && p.h ? `aspect-ratio:${p.w} / ${p.h}` : null;
   // 选项自带的图点一下是放大看，不是选它（选它点卡片其余地方或按数字键）
   const zoom = own ? e => { e.stopPropagation(); openLb(c, x.media, ctx); } : null;
-  return h('span', { class: 'tile-pic' + (/\.svg$/i.test(p.src) ? ' fit' : '') + (own ? ' zoomable' : ''), style: ar, title: own ? '点图放大' : null, onclick: zoom },
-    h('img', { src: p.thumb && !/\.svg$/i.test(p.src) ? p.thumb : p.src, alt: '', loading: 'lazy', decoding: 'async' }));
+  const img = h('img', { src: p.thumb && !/\.svg$/i.test(p.src) ? p.thumb : p.src, alt: '', loading: 'lazy', decoding: 'async' });
+  const box = h('span', { class: 'tile-pic' + (/\.svg$/i.test(p.src) ? ' fit' : '') + (own ? ' zoomable' : ''), style: ar, title: own ? (fine ? '点图或滚轮原地放大' : '点图放大') : null, onclick: zoom }, img);
+  if (own && fine) { attachZoom(img, box, p.orig || p.src); box.append(bigBtn(() => openLb(c, x.media, ctx), true)); }
+  return box;
 }
 const hasPics = c => (c.options || []).some(x => x.pic || x.gen || x.media != null);
 /* 方案文字和卡里其余的视频 / 照片一起排：宽屏文字在左、媒体在右，手机上下排（拆成文字时不能把视频丢了） */
@@ -538,6 +540,8 @@ function mediaStage(c, ctx, o, only) {
       img.addEventListener('load', () => { if (!ar && img.naturalWidth) frame.style.setProperty('--ar', `${img.naturalWidth} / ${img.naturalHeight}`); });
       frame.append(img);
       attachLoupe(img, m);
+      attachZoom(img, frame, m.orig);
+      if (fine) frame.append(bigBtn(() => openLb(c, i, ctx)));
     }
     frame.addEventListener('click', e => {
       if (e.target.tagName === 'VIDEO') return;
@@ -1230,6 +1234,7 @@ function activeCtx() {
   return null;
 }
 document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && ZOOM.img && !e.target.matches('input, textarea, select')) { e.preventDefault(); zoomReset(ZOOM.img); return; }
   if ($('#lb').classList.contains('on')) return lbKey(e);
   if (e.target.matches('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === '?') { location.href = '/help'; return; }
@@ -1281,14 +1286,9 @@ function attachLoupe(img, m) {
   });
   img.addEventListener('pointerleave', () => { if (LOUPE.img === img) hideLoupe(); });
   img.addEventListener('pointermove', e => { if (LOUPE.img === img) moveLoupe(e, img); });
-  img.addEventListener('wheel', e => {
-    if (LOUPE.img !== img) return;
-    e.preventDefault();
-    LOUPE.z = Math.min(10, Math.max(1.5, LOUPE.z * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
-    moveLoupe(e, img);
-  }, { passive: false });
 }
 function moveLoupe(e, img) {
+  if (img._z && img._z.z > 1) { loupeEl().classList.remove('on'); return; }  // 原地放大着就不出圈
   const el = loupeEl(), r = img.getBoundingClientRect();
   const nw = img.naturalWidth || r.width, nh = img.naturalHeight || r.height, k = Math.min(r.width / nw, r.height / nh);
   const dw = nw * k, dh = nh * k, ox = r.left + (r.width - dw) / 2, oy = r.top + (r.height - dh) / 2;
@@ -1303,10 +1303,67 @@ function moveLoupe(e, img) {
 }
 addEventListener('scroll', hideLoupe, { passive: true });
 
+/* ---------- 原地放大（电脑：点图 2.5 倍、滚轮 1–8 倍，图在原来的框里变大、跟着鼠标看；再点 / Esc / 缩回 1 倍还原）
+   说明图退回整张贴图时字太小，放大镜圈里看一小块不够：要整张在原地放大 ---------- */
+const ZOOM = { img: null, hover: false, pending: false };
+function zoomTo(img, z, cx, cy) {
+  const s = img._z, box = img._zbox;
+  z = Math.min(8, z);
+  if (z <= 1.02) return zoomReset(img);
+  if (ZOOM.img && ZOOM.img !== img) zoomReset(ZOOM.img);
+  if (img._hi && !s.hi) {  // 头一回放大换原图（卡片上多半是缩略图）
+    s.hi = true;
+    const pre = new Image(); pre.src = img._hi;
+    pre.decode().then(() => { if (img.isConnected && !img.src.endsWith(img._hi)) img.src = img._hi; }).catch(() => {});
+  }
+  const r = img.getBoundingClientRect(), b = box.getBoundingClientRect();
+  const w = img.offsetWidth, hh = img.offsetHeight, lx = r.left - s.tx, ly = r.top - s.ty;
+  // 放大后没框大：绕原中心放大、不出框；比框大：鼠标在框里的比例 = 看到图上的比例，移到框边正好看到图边
+  const at = (c, b0, bw, l0, n) => {
+    const zn = n * z;
+    return zn <= bw ? Math.min(b0 + bw - zn, Math.max(b0, l0 + n / 2 - zn / 2)) : b0 - (zn - bw) * Math.min(1, Math.max(0, (c - b0) / bw));
+  };
+  s.z = z; s.tx = at(cx, b.left, b.width, lx, w) - lx; s.ty = at(cy, b.top, b.height, ly, hh) - ly;
+  img.style.transform = `translate(${s.tx}px, ${s.ty}px) scale(${z})`;
+  img.classList.add('zin'); box.classList.add('zin');
+  ZOOM.img = img; ZOOM.hover = true; hideLoupe();
+}
+function zoomReset(img) {
+  if (!img || !img._z) return;
+  Object.assign(img._z, { z: 1, tx: 0, ty: 0 });
+  img.style.transform = ''; img.classList.remove('zin'); img._zbox.classList.remove('zin');
+  if (ZOOM.img !== img) return;
+  ZOOM.img = null;
+  if (ZOOM.pending) { ZOOM.pending = false; render(); }
+}
+// 放大着、鼠标还在图上时板上来了新卡：先不重画（一重画放大就没了），鼠标移开或还原再画
+const zoomHold = () => !!(ZOOM.img && ZOOM.img.isConnected && ZOOM.hover);
+function attachZoom(img, box, hi, { click = true } = {}) {
+  if (!fine) return;
+  img._zbox = box; img._hi = hi && hi !== img.getAttribute('src') ? hi : null; img._z = { z: 1, tx: 0, ty: 0 };
+  if (click) img.addEventListener('click', e => { e.stopPropagation(); img._z.z > 1 ? zoomReset(img) : zoomTo(img, 2.5, e.clientX, e.clientY); });
+  img.addEventListener('wheel', e => {
+    const z = img._z.z;
+    if (z <= 1 && e.deltaY > 0) return;  // 没放大时往下滚照常翻页
+    e.preventDefault();
+    const d = e.deltaY * (e.deltaMode === 1 ? 33 : 1);
+    zoomTo(img, z * Math.exp(-d * (e.ctrlKey ? 0.01 : 0.0025)), e.clientX, e.clientY);
+  }, { passive: false });
+  img.addEventListener('pointermove', e => { if (img._z.z > 1) zoomTo(img, img._z.z, e.clientX, e.clientY); });
+  img.addEventListener('pointerleave', () => {
+    if (ZOOM.img !== img) return;
+    ZOOM.hover = false;
+    if (ZOOM.pending) { ZOOM.pending = false; render(); }
+  });
+}
+// 卡片上的图点一下是原地放大，要开图层点右上角「大图」（在选项按钮里不能套 button）
+const bigBtn = (open, inBtn) => h(inBtn ? 'span' : 'button', { class: 'zbig', type: inBtn ? null : 'button', role: inBtn ? 'button' : null, title: '打开大图层',
+  onclick: e => { e.stopPropagation(); open(); } }, '大图');
+
 /* ---------- 图层看大图（× / 点空白 / Esc 关） ---------- */
 const LB = { c: null, i: 0, cmp: false, ctx: null, grid: false };
 function openLb(c, i, ctx) {
-  hideLoupe();
+  hideLoupe(); zoomReset(ZOOM.img);
   Object.assign(LB, { c, i, cmp: false, ctx: ctx || activeCtx(), grid: (c.media || []).length >= 3 });
   const lb = $('#lb'); lb.hidden = false;
   void lb.offsetWidth;
@@ -1316,7 +1373,7 @@ function openLb(c, i, ctx) {
 }
 function closeLb() {
   const lb = $('#lb'); if (lb.hidden) return;
-  hideLoupe(); lb.classList.remove('on'); document.body.style.overflow = '';
+  hideLoupe(); zoomReset(ZOOM.img); lb.classList.remove('on'); document.body.style.overflow = '';
   setTimeout(() => { if (!lb.classList.contains('on')) { lb.hidden = true; $('#lb-stage').replaceChildren(); } }, 180);
 }
 function lbActs(c, opt) {
@@ -1333,7 +1390,7 @@ function drawLb() {
   const stage = $('#lb-stage'), foot = $('#lb-foot');
   const imgs = media.map((x, i) => x.kind === 'img' ? i : -1).filter(i => i >= 0);
   const opt = (c.options || []).find(x => x.media === LB.i);
-  hideLoupe();
+  hideLoupe(); zoomReset(ZOOM.img);
   stage.classList.remove('zoomed');
   $('#lb-t').replaceChildren(h('span', { class: 'n' }, pad(c.seq)), hl(c.title));
   $('#lb-prev').hidden = $('#lb-next').hidden = media.length < 2 || LB.grid;
@@ -1358,6 +1415,7 @@ function drawLb() {
     const img = h('img', { src: m.src, alt: m.label || '' });
     if (m.orig && m.orig !== m.src) { const hi = new Image(); hi.onload = () => { if (img.isConnected && LB.c === c) img.src = m.orig; }; hi.src = m.orig; }
     attachLoupe(img, m);
+    attachZoom(img, stage, null);
     if (!fine) img.addEventListener('click', e => {
       const r = img.getBoundingClientRect(), fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height;
       if (stage.classList.toggle('zoomed')) requestAnimationFrame(() => {
@@ -1367,7 +1425,7 @@ function drawLb() {
     });
     stage.replaceChildren(h('figure', { class: 'lb-fig' }, img));
   }
-  const hint = m.kind === 'img' && !LB.cmp ? (fine ? '移上去看细节，滚轮调倍数' : '点图放大，再点还原') : null;
+  const hint = m.kind === 'img' && !LB.cmp ? (fine ? '移上去看细节，点图或滚轮原地放大，再点还原' : '点图放大，再点还原') : null;
   foot.replaceChildren(...kids(
     h('div', { class: 'lb-meta' },
       h('span', { class: 'lb-lab' }, hl(label)),
@@ -1395,8 +1453,10 @@ function drawLbGrid(c, media) {
       h('figcaption', null, o ? h('b', null, o.label) : (isBroken(m.label) ? h('i', { class: 'dot' }) : null), h('span', null, hl(o ? (m.caption || m.label || '') : [m.label, m.caption ? ' · ' + m.caption : ''].join(''))))));
   });
   stage.replaceChildren(box);
+  // 并排里点一张是单独看，只给滚轮原地放大
+  box.querySelectorAll('.im > img').forEach(el => attachZoom(el, el.parentNode, null, { click: false }));
   gridFit(box, media, () => innerWidth <= 760 ? { gap: 8, cap: 24 } : { gap: 14, cap: 28 });
-  const hint = fine ? '移上去看细节，滚轮调倍数 · 点一张单独看' : '点一张单独看';
+  const hint = fine ? '移上去看细节，滚轮原地放大 · 点一张单独看' : '点一张单独看';
   foot.replaceChildren(...kids(
     h('div', { class: 'lb-meta' }, h('span', { class: 'lb-lab' }, `并排 ${media.length} 张`), h('span', null, hint)),
     h('div', { class: 'lb-tools' }, lbActs(c, null))));
