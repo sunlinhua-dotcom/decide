@@ -303,7 +303,7 @@ class ChatAsrTest(Base):
 
     def test_chat_voice(self):
         for _ in range(2):
-            self.card("Astra 和 Opus 5.5 谁来改 MY6")
+            self.card("Astra 和 Opus 5.5 谁来改 MY6", note="素材在 /Volumes/Work/ProjectsX/v2 里，约 30 MB，参考 v3.1")
         self.card("只说过一次的 Zebra")
         FAKE["chat_reply"] = ""
         code, j = self.req("/api/voice", "POST", raw=tone_wav(), ctype="audio/wav")
@@ -314,9 +314,11 @@ class ChatAsrTest(Base):
         self.assertEqual(body["temperature"], 0)
         ctx = body["messages"][0]["content"]
         self.assertEqual(body["messages"][0]["role"], "system")
-        self.assertTrue(ctx.startswith("Codex、GLM、"), ctx)
-        for w in ("Astra", "Opus 5.5", "MY6"):
+        self.assertTrue(ctx.startswith("Codex、GLM、Opus 5.5、"), ctx)  # 手填的在前，带版本号的紧跟
+        for w in ("Astra", "MY6"):
             self.assertIn(w, ctx)
+        for w in ("Volumes", "ProjectsX", "v2", "v3.1", "MB"):  # 路径里的目录名、v2、单位都不算
+            self.assertNotIn(w, ctx.split("、"))
         self.assertNotIn("Zebra", ctx)  # 只有一张卡说过的不收
 
     def test_chat_voice_empty(self):

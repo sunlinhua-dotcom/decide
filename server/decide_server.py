@@ -374,13 +374,15 @@ def multipart(fields, files):
 HOT_RE = re.compile(r"(?<![A-Za-z0-9])[A-Za-z][A-Za-z0-9]*(?:[.+-][A-Za-z0-9]+)*(?: \d+(?:\.\d+)+)?")
 HOT_SKIP = set("""a an and are as at be but by can do for from has have how if in into is it its me my no not of on or our so
 that the then this to up us was we what when which who why will with you your all any new one two yes ok id url http https
-www com top png jpg jpeg svg mp4 mov gif webp pdf html css js json md txt zip px dpi fps sec min ver""".split())
+www com top png jpg jpeg svg mp4 mov gif webp pdf html css js json md txt zip px dpi fps sec min ver kb mb gb tb""".split())
+HOT_PATH = re.compile(r"\S*[/\\]\S*")      # 路径、网址整段不算：Volumes、ProjectsAPFS 这种目录名没人会念
+HOT_VER = re.compile(r"\d\.\d")             # 带版本号的（「Opus 5.5」）排在最前：表一长，排后面的模型会写成「五点五」
 HOT_CACHE = {"at": 0.0, "words": []}
 
 
 def hotwords():
-    """热词表：手填的在前，再补板上近 30 天卡片（标题、说明、选项、意见）里至少两张卡说过的英文词，按出现的卡数排，
-    整串不超过 600 字。十分钟算一次。"""
+    """热词表：手填的在前，再补板上近 30 天卡片（标题、说明、选项、意见）里至少两张卡说过的英文词，
+    带版本号的排前、其余按出现的卡数排，整串不超过 600 字。十分钟算一次。"""
     if time.time() - HOT_CACHE["at"] < 600:
         return HOT_CACHE["words"]
     cnt, shape = {}, {}
@@ -395,18 +397,19 @@ def hotwords():
         text = " ".join([s.get("title") or "", s.get("sub") or "", str(a.get("note") or "")]
                         + [f"{o.get('label', '')} {o.get('desc', '')}" for o in s.get("options") or [] if isinstance(o, dict)])
         seen = set()
-        for m in HOT_RE.finditer(text):
+        for m in HOT_RE.finditer(HOT_PATH.sub(" ", text)):
             w = m.group(0)
             if w[0].islower() and " " in w:  # 版本号只跟专名走（「Opus 5.5」），「seed 3」这种不算
                 w = w.split(" ")[0]
             k = w.lower()
-            if len(w) < 2 or k in HOT_SKIP or k in seen or k.isdigit():
+            if len(w) < 2 or k in HOT_SKIP or k in seen or k.isdigit() or re.fullmatch(r"v\d+(?:\.\d+)*", k):
                 continue
             seen.add(k)
             cnt[k] = cnt.get(k, 0) + 1
             shape.setdefault(k, {})[w] = shape.get(k, {}).get(w, 0) + 1
     words, have, size = [], set(), 0
-    for w in ASR_HOTWORDS + [max(shape[k], key=shape[k].get) for k in sorted(cnt, key=lambda k: -cnt[k]) if cnt[k] >= 2]:
+    auto = [max(shape[k], key=shape[k].get) for k in sorted(cnt, key=lambda k: -cnt[k]) if cnt[k] >= 2]
+    for w in ASR_HOTWORDS + [w for w in auto if HOT_VER.search(w)] + [w for w in auto if not HOT_VER.search(w)]:
         if w.lower() in have or size + len(w) > 600:
             continue
         have.add(w.lower())
