@@ -1,0 +1,4 @@
+#!/bin/bash
+# route305 —— 客户修改需求自动分拣到对应会话。软链接到 PATH 上即可（会沿链接找到同目录的 route305.py）
+SELF="$0"; while [ -L "$SELF" ]; do L="$(readlink "$SELF")"; case "$L" in /*) SELF="$L";; *) SELF="$(dirname "$SELF")/$L";; esac; done
+exec python3 -I "$(cd "$(dirname "$SELF")" && pwd)/route305.py" "$@" </dev/null

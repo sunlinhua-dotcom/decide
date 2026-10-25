@@ -94,7 +94,7 @@ Two hooks in `hooks/` turn Claude Code's own prompts into cards. Register them i
 - `decide-permission-hook.mjs` — tool permissions (allow once / allow for this session / deny with a note), `AskUserQuestion` (one card per question, "none of these, I'll write it"), and `ExitPlanMode` (approve with auto-accept edits, approve with manual edits, or send changes back).
 - `decide-offer-hook.mjs` — Claude Desktop's "New session / Do it here" offers.
 
-Cards land in the project `claude-allow`. If the board cannot be reached, nobody answers in time, or anything fails, the hooks print nothing and Claude falls back to its own dialog, so nothing is ever allowed by default. The hooks read the board address and key from `~/.config/decide/config.json` (or `DECIDE_BASE` / `DECIDE_KEY`); `~/.config/decide/hooks.json` can set `{"enabled": true, "waitSec": 1800, "decideOffers": true}`.
+Cards land in the project `claude-allow`. If the board cannot be reached, nobody answers in time, or anything fails, the hooks print nothing and Claude falls back to its own dialog, so nothing is ever allowed by default. The hooks read the board address and key from `~/.config/decide/config.json` (or `DECIDE_BASE` / `DECIDE_KEY`); `~/.config/decide/hooks.json` can set `{"enabled": true, "waitSec": 1800, "decideOffers": true}`. To keep a project off the board entirely, list its root directory in `~/.claude/private-roots` (one per line): sessions under it make the hooks exit silently and nothing leaves the machine.
 
 **Answers that never reached the session.** If `decide listen` dies or is never re-hung, an answer can sit on the board while the session keeps saying it is waiting. Two more hooks close that gap:
 
@@ -106,6 +106,7 @@ Cards land in the project `claude-allow`. If the board cannot be reached, nobody
 - `hook prompt` adds any answered-but-undelivered cards to the context of the user's next message.
 - `hook stop` blocks the end of a turn once if there are such answers, or if the session has pending cards that no `listen` / `wait` is watching.
 - Both print nothing on any error.
+- They also work in Antigravity sessions (`ANTIGRAVITY_CONVERSATION_ID`): the hook reads that client's input and answers with its `injectSteps` / `continue` protocol.
 
 ## Configuration
 
@@ -121,7 +122,8 @@ Cards land in the project `claude-allow`. If the board cannot be reached, nobody
 | `DECIDE_PASSWORD` | none | Optional web password for phones; without it, log in with the key |
 | `DECIDE_TRUST_PROXY` | `0` | `1` = use `CF-Connecting-IP` / `X-Forwarded-For` for login rate limiting |
 | `DECIDE_SERVE_STATIC` | `1` | `0` = your reverse proxy serves `web/` and media itself |
-| `DECIDE_ASR_URL` / `DECIDE_ASR_MODEL` | none / `whisper-1` | OpenAI-compatible `/v1/audio/transcriptions` endpoint for hold-to-talk; without it the mic buttons are hidden. Needs `ffmpeg` on the server (audio is converted to 16 kHz WAV, never stored) |
+| `DECIDE_ASR_URL` / `DECIDE_ASR_MODEL` | none / `whisper-1` | Hold-to-talk speech-to-text: an OpenAI-compatible `/v1/audio/transcriptions` endpoint, or a `/v1/chat/completions` one that takes `input_audio` (e.g. Qwen3-ASR on llama.cpp); without it the mic buttons are hidden. Needs `ffmpeg` on the server (audio is converted to 16 kHz WAV, never stored). Chinese, English and Japanese are detected automatically; silent recordings are rejected before they reach the model |
+| `DECIDE_ASR_HOTWORDS` | none | Extra terms passed to the speech model as context, on top of English words used on at least two recent cards, so product and model names in mixed Chinese–English speech come out spelled correctly |
 | `DECIDE_LLM_URL` / `DECIDE_LLM_MODEL` / `DECIDE_LLM_KEY_FILE` | none | OpenAI-compatible `/chat/completions` endpoint for "search by meaning" on the decided list (Enter in the search box); the key is read from a file at request time. Only text summaries are sent. Without it, search is lexical + fuzzy only |
 
 **CLI and hooks** (environment variables, or `~/.config/decide/config.json`; see [`config.example.json`](config.example.json)):
@@ -157,6 +159,8 @@ writes one folder per item (`item.json` with `text`, `chat`, `note`, `files`, pl
 
 uploads each file with `POST /v1/files` (raw body, `X-Filename` header) and submits `POST /v1/jobs {capability, params: {text, chat, note}, inputs: {files}, idempotency_key}`, then follows `GET /v1/jobs/<id>`. The token stays on the server; give it the narrowest scope your gateway allows.
 
+**Dispatch desk (派活台).** [`paihuotai/`](paihuotai/) is an optional add-on that takes the other end of that inbox. `route305` scores your recent Claude Code sessions against each item and asks on the board which session it belongs to, and a Feishu/Lark bot bridge can feed the same inbox. How it works: [`docs/DISPATCH.md`](docs/DISPATCH.md). Every background service in a full setup, without addresses or keys: [`docs/SERVICES.md`](docs/SERVICES.md).
+
 ## Deploying
 
 For use beyond one machine, run the server behind HTTPS. [`deploy/Caddyfile.example`](deploy/Caddyfile.example) is a complete Caddy site (automatic certificates, long-poll friendly), and [`deploy/decide.service.example`](deploy/decide.service.example) a systemd unit. Set `DECIDE_PUBLIC=https://your-domain`, `DECIDE_TRUST_PROXY=1` and a `DECIDE_PASSWORD`. A Cloudflare Tunnel in front of `127.0.0.1:8796` works the same way.
@@ -171,6 +175,8 @@ bin/decide                CLI: ask / pick / q / wait / listen / resolve / chat /
 web/app/                  the board (vanilla JS, no build step); web/public/: login page, icons
 hooks/                    Claude Code PermissionRequest / PreToolUse hooks
 deploy/                   Caddy and systemd examples
+paihuotai/                optional dispatch desk: route305 triage CLI + Feishu/Lark bot bridge
+docs/                     DISPATCH.md (how dispatch works) · SERVICES.md (background services)
 tests/                    python3 -m unittest discover -s tests · node --test tests/*.test.mjs
 ```
 
@@ -266,13 +272,14 @@ bin/decide ask -p demo -t "T12 杯子特写 · 手柄朝右" --before old.jpg --
 - `decide-permission-hook.mjs`：工具授权（允许一次 / 本会话一直允许 / 拒绝并附意见）、`AskUserQuestion`（每个问题一张卡，带「都不是，我来写」）、`ExitPlanMode`（批准并自动接受编辑、批准但逐个确认、要改）。
 - `decide-offer-hook.mjs`：Claude Desktop 的「新会话 / 在这里做」。
 
-卡片进 `claude-allow` 项目。决策板连不上、到点没人答、或者出任何错，钩子都什么也不输出，Claude 退回自己的对话框，绝不会默认放行。钩子从 `~/.config/decide/config.json`（或 `DECIDE_BASE` / `DECIDE_KEY`）读地址和密钥；`~/.config/decide/hooks.json` 可写 `{"enabled": true, "waitSec": 1800, "decideOffers": true}`。
+卡片进 `claude-allow` 项目。决策板连不上、到点没人答、或者出任何错，钩子都什么也不输出，Claude 退回自己的对话框，绝不会默认放行。钩子从 `~/.config/decide/config.json`（或 `DECIDE_BASE` / `DECIDE_KEY`）读地址和密钥；`~/.config/decide/hooks.json` 可写 `{"enabled": true, "waitSec": 1800, "decideOffers": true}`。不想让某个项目出现在板上：把它的根目录写进 `~/.claude/private-roots`（每行一个），这些目录下的会话钩子直接静默退出，什么都不外发。
 
 **答案没送到会话**：`decide listen` 死了或没重挂时，用户已经在板上答了，会话还在说「在等你定」。再加两个钩子补上（JSON 同上方英文部分）：
 
 - `hook prompt`：用户发下一条消息时，把已答但没送到的卡塞进上下文。
 - `hook stop`：本轮结束时，有这种答案，或本会话有待定卡却没有 `listen` / `wait` 在听，就拦一次。
 - 出任何错都什么也不输出。
+- Antigravity 会话（`ANTIGRAVITY_CONVERSATION_ID`）同样能用：钩子认得它的输入格式，按它的协议回 `injectSteps` / `continue`。
 
 ## 配置说明
 
@@ -280,10 +287,11 @@ bin/decide ask -p demo -t "T12 杯子特写 · 手柄朝右" --before old.jpg --
 
 - 服务端默认只听 `127.0.0.1:8796`，数据放 `./data`；对外用时设 `DECIDE_PUBLIC=https://你的域名`、`DECIDE_TRUST_PROXY=1`，再设一个 `DECIDE_PASSWORD` 方便手机登录。
 - 命令行默认连 `http://127.0.0.1:8796`；连远端服务就设 `DECIDE_BASE` 和 `DECIDE_KEY`，或写进 `~/.config/decide/config.json`。
-- **按住说话**：设 `DECIDE_ASR_URL`（OpenAI 兼容的 `/v1/audio/transcriptions`，如自建 Whisper / Qwen3-ASR）才显示话筒；服务器要有 `ffmpeg`，录音转成 16 kHz WAV 送去转写，不落盘。
+- **按住说话**：设 `DECIDE_ASR_URL`（OpenAI 兼容的 `/v1/audio/transcriptions`，如自建 Whisper / Qwen3-ASR）才显示话筒；服务器要有 `ffmpeg`，录音转成 16 kHz WAV 送去转写，不落盘。地址以 `/v1/chat/completions` 结尾时按对话接口送音频（`input_audio`，llama.cpp 跑 Qwen3-ASR 就这么接）。中文、英文、日语自动识别；`DECIDE_ASR_HOTWORDS` 加上板上近期常出现的英文词会作为上下文送给模型，中英夹着说时模型名、产品名照原样写；录进去是静音直接提示，不送模型。
 - **已定搜索**：边打边搜是本地的字面 + 模糊匹配；设了 `DECIDE_LLM_URL`、`DECIDE_LLM_MODEL`、`DECIDE_LLM_KEY_FILE`（OpenAI 兼容的 `/chat/completions`，key 放在 600 权限的文件里）后，搜索框里回车按意思找，只发文字摘要。
 - **在对话里说提醒**：板上点了「在对话里说」、那个 Claude 会话 15 分钟没发消息，板上顶部出红条并弹系统通知；`decide hook prompt` 钩子负责停表。
 - **派活入口**：`$DECIDE_HOME/intake.json` 存在才在顶栏出现（每次现读，路径可用 `DECIDE_INTAKE_CONF` 改）。写 `{"dir": "收件箱目录"}` 就每件落一个子目录（`item.json` + `files/`，写完才改名）；写 `{"gateway": "…", "token": "…", "capability": "route.intake"}` 就经任务网关的 `POST /v1/files`、`POST /v1/jobs` 交件。附件单个 95 MB 以内、一次最多 30 个；令牌只放服务器，权限给到最小。
+- **派活台**：收件箱的另一头在 [`paihuotai/`](paihuotai/)（可选）。`route305` 给最近的 Claude Code 会话打分，在板上问「投给哪个会话」，你点了才投；飞书机器人桥也往同一个收件箱放件。机制见 [`docs/DISPATCH.md`](docs/DISPATCH.md)，一整套用到的后台服务（去掉了地址和密钥）见 [`docs/SERVICES.md`](docs/SERVICES.md)。
 - **`@画面` 配图**：`DECIDE_GEN_CMD` 指向任何能出一张图的命令，`{prompt}` `{out}` `{w}` `{h}` 会被整体替换（不经过 shell）。多条命令一行一条（或在 `gen_cmd` 里写数组），它们从同一个队列抢活，谁空谁出；配图永远不挡卡片，没图的选项照样能选。
 
 ## 部署

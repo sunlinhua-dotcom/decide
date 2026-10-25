@@ -28,7 +28,8 @@ import webbrowser
 
 ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 CONF_PATH = os.path.expanduser(os.environ.get("DECIDE_CONFIG") or "~/.config/decide/config.json")
-SESSION = os.environ.get("DECIDE_SESSION") or os.environ.get("CLAUDE_CODE_SESSION_ID") or ""
+SESSION = (os.environ.get("DECIDE_SESSION") or os.environ.get("CLAUDE_CODE_SESSION_ID")
+           or os.environ.get("ANTIGRAVITY_CONVERSATION_ID") or "")
 LOCK_DIR = os.path.expanduser("~/.cache/decide")
 SVG_EXT = {".svg"}
 IMG_EXT = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".tif", ".tiff", ".bmp", ".gif"}
@@ -1265,22 +1266,26 @@ def local_listening(sess):
 
 
 def cmd_hook(a):
-    """Claude Code 钩子（10-19）。会话常说「在等你在 decide 上定」，其实用户早答了：监听死了或没重挂。
-    prompt：用户发消息时，把已答但没送到本会话的答案塞进上下文。
+    """Claude Code / Antigravity 钩子。会话常说「在等你在 decide 上定」，其实用户早答了：监听死了或没重挂。
+    prompt：用户发消息或模型调用前，把已答但没送到本会话的答案塞进上下文。
     stop：本轮要结束时，有答案没送到就拦下补送；有待定卡却没有 listen / wait 在听，就拦下提醒挂监听。
-    任何错误一律静默放行（退出 0、不输出）。"""
+    任何错误一律静默放行（退出 0；Antigravity 下输出空 JSON 对象 {}）。"""
     try:
         data = json.load(sys.stdin)
     except ValueError:
         return 0
-    if a.event == "stop" and data.get("stop_hook_active"):
-        return 0
-    sess = os.environ.get("DECIDE_SESSION") or data.get("session_id") or ""
+    is_agy = isinstance(data, dict) and "conversationId" in data
+    empty = lambda: (print("{}"), 0)[1] if is_agy else 0
+    if a.event == "stop" and (data.get("stop_hook_active")
+                              or (is_agy and data.get("terminationReason", "NO_TOOL_CALL") != "NO_TOOL_CALL")):
+        return empty()
+    sess = (os.environ.get("DECIDE_SESSION") or data.get("session_id")
+            or data.get("conversationId") or SESSION)
     c = hook_conf()
     if not sess or not c:
-        return 0
-    if a.event == "prompt":
-        try:  # 用户在对话里说话了：板上「在对话里说」的卡停表，不再提醒（10-21）
+        return empty()
+    if a.event == "prompt" and (not is_agy or data.get("invocationNum", 1) <= 1):
+        try:  # 用户在对话里说话了：板上「在对话里说」的卡停表，不再提醒
             http(c, "POST", "/api/heard", {"session": sess}, timeout=2)
         except Exception:  # noqa: BLE001
             pass
@@ -1290,7 +1295,7 @@ def cmd_hook(a):
             time.sleep(1.5)  # 刚在后台挂的 listen 可能还没连上，再看一眼
             st = session_state(c, sess, 3)
     except Exception:  # noqa: BLE001
-        return 0
+        return empty()
     listening = st["listening"] or local_listening(sess)
     # 监听在跑、答案刚出来（30 秒内）的，交给监听送，免得送两遍
     give = [x for x in st["unacked"]
@@ -1302,19 +1307,23 @@ def cmd_hook(a):
             pass
     if a.event == "prompt":
         if give:
-            print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
-                                                     "additionalContext": answers_text(give, "监听没送到，钩子补送")}},
-                             ensure_ascii=False))
-        return 0
+            txt = answers_text(give, "监听没送到，钩子补送")
+            out = ({"injectSteps": [{"systemMessage": {"systemMessage": txt}}]} if is_agy
+                   else {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": txt}})
+            print(json.dumps(out, ensure_ascii=False))
+            return 0
+        return empty()
     msgs = [answers_text(give, "监听没送到，钩子补送")] if give else []
     lone = [] if listening else [x for x in st["pending"] if not x["watched"]]
     if lone:
         seqs = "、".join(f"{x['seq']:02d}" for x in lone)
         msgs.append(f"本会话还有 {len(lone)} 张 decide 待定卡（编号 {seqs}）没有 listen / wait 在听，用户点了也送不回来。"
-                    "用 run_in_background 挂 `decide listen` 后再结束本轮；不再需要的卡用 `decide cancel <id>` 撤掉。")
+                    "用后台命令挂 `decide listen` 后再结束本轮；不再需要的卡用 `decide cancel <id>` 撤掉。")
     if msgs:
-        print(json.dumps({"decision": "block", "reason": "\n\n".join(msgs)}, ensure_ascii=False))
-    return 0
+        print(json.dumps({"decision": "continue" if is_agy else "block", "reason": "\n\n".join(msgs)},
+                         ensure_ascii=False))
+        return 0
+    return empty()
 
 
 SYN = {"过": "ok", "通过": "ok", "可以": "ok", "ok": "ok", "OK": "ok", "行": "ok",
