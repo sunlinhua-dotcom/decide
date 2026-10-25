@@ -1,0 +1,5 @@
+#!/bin/bash
+# ccpaihuo —— 飞书桥启动器。软链接到 PATH 上即可（会沿链接找到同目录的 .venv 和 bridge.py）
+SELF="$0"; while [ -L "$SELF" ]; do L="$(readlink "$SELF")"; case "$L" in /*) SELF="$L";; *) SELF="$(dirname "$SELF")/$L";; esac; done
+D="$(cd "$(dirname "$SELF")" && pwd)"
+exec "$D/.venv/bin/python" "$D/bridge.py" "$@"

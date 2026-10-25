@@ -1,0 +1,5 @@
+{
+  "app_id": "<飞书开放平台的 App ID>",
+  "app_secret": "放在 ~/.config/ccpaihuo/app.json，chmod 600，不进 git",
+  "owner_open_ids": []
+}
