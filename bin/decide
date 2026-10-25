@@ -476,17 +476,20 @@ def svg_plan(path, loose=False):
         return False
 
     plan = {"title": "", "sub": "", "lines": [], "foot": [], "secs": []}
-    cands = [g for g in root.iter() if tag(g) == "g" and any(tag(k) == "rect" for k in g)
+    isbox = lambda r: tag(r) == "rect" and num(r, "width") > 160 and num(r, "height") > 60
+    # 一个 <g> 里直接画了两个以上的框，是只管字号字色的外壳，不是一节（六个小节全包在一个 <g> 里，
+    # 当成一节就有三十多行、超上限，退回整张缩小贴图）：拆开，框和字按坐标归，同根上直接画的一样
+    shells = {g for g in root.iter() if tag(g) == "g" and not g.get("transform") and sum(1 for k in g if isbox(k)) >= 2}
+    cands = [g for g in root.iter() if tag(g) == "g" and g not in shells and any(tag(k) == "rect" for k in g)
              and sum(1 for k in g.iter() if tag(k) == "text" and txt(k)) >= 2]
     secs_el = [g for g in cands if not any(o is not g and o in set(g.iter()) for o in cands)]
     in_sec = {k for g in secs_el for k in g.iter()}
     if not secs_el:  # 没分组、直接画框写字（完成卡左右两栏）：按坐标把字归进框里
-        boxes = [r for r in root.iter() if tag(r) == "rect" and parent.get(r) is root and num(r, "width") > 160
-                 and num(r, "height") > 60]
+        boxes = [r for r in root.iter() if isbox(r) and (parent.get(r) is root or parent.get(r) in shells)]
         boxes = [r for r in boxes if not (num(r, "width") >= 0.95 * vb[0] and num(r, "height") >= 0.95 * vb[1])]
         for r in sorted(boxes, key=lambda r: (num(r, "y"), num(r, "x"))):
             x0, y0, x1, y1 = num(r, "x"), num(r, "y"), num(r, "x") + num(r, "width"), num(r, "y") + num(r, "height")
-            ts = [e for e in texts if (parent.get(e) is root or loose and not moved(e)) and e not in in_sec
+            ts = [e for e in texts if (parent.get(e) is root or parent.get(e) in shells or loose and not moved(e)) and e not in in_sec
                   and x0 <= num(e, "x") <= x1 and y0 <= num(e, "y") <= y1]
             if len(ts) < 2:
                 continue

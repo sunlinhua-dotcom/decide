@@ -94,6 +94,27 @@ FLOW = HEAD + """
 <path d="M240 116 H286" stroke="#888"/><path d="M490 154 H536" stroke="#888"/>
 </svg>"""
 
+# 几个小节的框和字全包在一个只管字号字色的 <g> 里：外壳不算一节，照样按框拆
+SHELL = HEAD + """
+<text x="40" y="54" font-size="28" font-weight="700">新片脚本：先讲处境和账，最后才亮出产品</text>
+<g font-size="18" fill="#222">
+<rect x="40" y="84" width="360" height="440" fill="#fff" stroke="#c9c5b8"/>
+<text x="60" y="122" font-size="21" font-weight="700">① 钩子（0–6 秒）</text>
+<text x="60" y="160">· 先说观众以为的事，再拿一个反例打掉</text>
+<text x="60" y="192">· 画面只留一个人和一句客户原话</text>
+<rect x="420" y="84" width="360" height="440" fill="#fff" stroke="#c9c5b8"/>
+<text x="440" y="122" font-size="21" font-weight="700">② 时间账（6–30 秒）</text>
+<text x="440" y="160">· 每天省下多少分钟，用后台真实记录说话</text>
+<text x="440" y="192">· 估算的数字在画面上写明怎么算的</text>
+<rect x="800" y="84" width="360" height="440" fill="#fff" stroke="#c9c5b8"/>
+<text x="820" y="122" font-size="21" font-weight="700">③ 亮出产品（30–40 秒）</text>
+<text x="820" y="160">· 产品最后才出场，只拍它解决的那一步</text>
+<text x="820" y="192">· 结尾一句话收住，不念功能清单</text>
+</g>
+<text x="40" y="580" font-size="20">有两处要你拍板：估算数字能不能上画面</text>
+<text x="40" y="620" font-size="20"><tspan fill="#d33f2a">推荐</tspan>：按这个结构写稿。</text>
+</svg>"""
+
 
 class SvgPlanTest(unittest.TestCase):
     @classmethod
@@ -125,6 +146,13 @@ class SvgPlanTest(unittest.TestCase):
 
     def test_embedded_photo_stays_image(self):
         self.assertIsNone(self.plan(PHOTO))
+
+    def test_sections_wrapped_in_one_style_group(self):
+        p = self.plan(SHELL)
+        self.assertEqual(p["title"], "新片脚本：先讲处境和账，最后才亮出产品")
+        self.assertEqual([s["t"] for s in p["secs"]], ["① 钩子（0–6 秒）", "② 时间账（6–30 秒）", "③ 亮出产品（30–40 秒）"])
+        self.assertTrue(all(len(s["lines"]) == 2 for s in p["secs"]))
+        self.assertEqual(len(p["foot"]), 2)
 
     def test_bare_card_splits_on_headings(self):
         p = self.plan(BARE)
