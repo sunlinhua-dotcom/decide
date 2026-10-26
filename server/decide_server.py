@@ -49,9 +49,11 @@ COOKIE_SECURE = os.environ.get("DECIDE_COOKIE_SECURE", "1" if PUBLIC_BASE.starts
 MAX_UPLOAD = 300 * 1024 * 1024
 # 按住说话：OpenAI 兼容的转写接口（/v1/audio/transcriptions），没配就不显示话筒。
 # 地址以 /chat/completions 结尾：按对话接口送音频（input_audio），热词放 system——Qwen3-ASR 官方就这么给上下文
-ASR_URL = os.environ.get("DECIDE_ASR_URL", "")
+# 逗号隔开可写几个：前一个连不上 / 报错就换下一个，刚失败的 60 秒内先跳过（主机临时停了转写，备机顶上）
+ASR_URLS = [u.strip() for u in os.environ.get("DECIDE_ASR_URL", "").split(",") if u.strip()]
+ASR_URL = ASR_URLS[0] if ASR_URLS else ""
 ASR_MODEL = os.environ.get("DECIDE_ASR_MODEL", "whisper-1")
-ASR_CHAT = ASR_URL.rstrip("/").endswith("/chat/completions")
+ASR_DOWN = {}  # 地址 -> 这个时刻之前先不找它
 # 热词：中英混说时英文专名常被写成同音中文（「Opus 5.5」→「OPPOs五点五」），给一份热词表就认得对。
 # 手填的（逗号 / 顿号分隔）+ 板上近 30 天卡片里常见的英文词
 ASR_HOTWORDS = [w.strip() for w in re.split(r"[,，、\n]", os.environ.get("DECIDE_ASR_HOTWORDS", "")) if w.strip()]
@@ -461,28 +463,40 @@ def transcribe(raw, ctype):
         raise Bad(422, "没录到声音：话筒可能被别的程序占着，或者系统里选错了输入设备")
     ctx = "、".join(hotwords())
     t0 = time.time()
-    if ASR_CHAT:
-        audio = {"type": "input_audio", "input_audio": {"data": base64.b64encode(data).decode(), "format": "wav" if name.endswith(".wav") else name.rsplit(".", 1)[-1]}}
-        body = json.dumps({"model": ASR_MODEL, "temperature": 0, "max_tokens": 1024,
-                           "messages": ([{"role": "system", "content": ctx}] if ctx else []) + [{"role": "user", "content": [audio]}]}).encode()
-        ct = "application/json"
-    else:  # 标准转写接口：热词走 prompt（Whisper 一类就是这么给词表的）
-        body, ct = multipart({"model": ASR_MODEL, "response_format": "json", "temperature": "0", **({"prompt": ctx} if ctx else {})},
-                             {"file": (name, "audio/wav" if name.endswith(".wav") else ctype, data)})
-    req = urllib.request.Request(ASR_URL, data=body, method="POST", headers={"Content-Type": ct})
-    try:
-        with urllib.request.urlopen(req, timeout=45) as r:
+
+    def ask(url, timeout):
+        if url.rstrip("/").endswith("/chat/completions"):
+            audio = {"type": "input_audio", "input_audio": {"data": base64.b64encode(data).decode(), "format": "wav" if name.endswith(".wav") else name.rsplit(".", 1)[-1]}}
+            body = json.dumps({"model": ASR_MODEL, "temperature": 0, "max_tokens": 1024,
+                               "messages": ([{"role": "system", "content": ctx}] if ctx else []) + [{"role": "user", "content": [audio]}]}).encode()
+            ct = "application/json"
+        else:  # 标准转写接口：热词走 prompt（Whisper 一类就是这么给词表的）
+            body, ct = multipart({"model": ASR_MODEL, "response_format": "json", "temperature": "0", **({"prompt": ctx} if ctx else {})},
+                                 {"file": (name, "audio/wav" if name.endswith(".wav") else ctype, data)})
+        req = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": ct})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             j = json.loads(r.read() or b"{}")
-    except (urllib.error.URLError, OSError, ValueError) as e:
-        sys.stderr.write(f"ASR 失败：{e!r}\n")
+        return str((j.get("choices") or [{}])[0].get("message", {}).get("content") or "") if "choices" in j else str(j.get("text") or "")
+
+    now, out, used = time.time(), None, ""
+    order = [u for u in ASR_URLS if ASR_DOWN.get(u, 0) <= now] or ASR_URLS
+    for i, url in enumerate(order):
+        try:
+            out = ask(url, 20 if i < len(order) - 1 else 45)  # 后面还有备机就别等满 45 秒
+            ASR_DOWN.pop(url, None)
+            used = urlparse(url).netloc
+            break
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            ASR_DOWN[url] = time.time() + 60
+            sys.stderr.write(f"ASR 失败（{urlparse(url).netloc}）：{e!r}\n")
+    if out is None:
         raise Bad(502, "识别服务没响应，稍后再试")
-    out = str((j.get("choices") or [{}])[0].get("message", {}).get("content") or "") if ASR_CHAT else str(j.get("text") or "")
     m = re.match(r"^\s*language\s+([^<\n]*)<asr_text>\s*", out, flags=re.I)
     lang = m.group(1).strip() if m else ""
     text = out[m.end():].strip() if m else out.strip()
     if ctx and text.strip(" 。.") == ctx:  # 有的模型对着几乎没声的录音把热词原样念回来
         text = ""
-    sys.stderr.write(f"voice {lv[0] if lv else 0:.1f}s 峰值 {lv[1] if lv else 0:.0f} dB → {lang or '?'} {len(text)} 字，{time.time() - t0:.1f} s\n")
+    sys.stderr.write(f"voice {lv[0] if lv else 0:.1f}s 峰值 {lv[1] if lv else 0:.0f} dB → {lang or '?'} {len(text)} 字，{time.time() - t0:.1f} s（{used}）\n")
     return text
 
 

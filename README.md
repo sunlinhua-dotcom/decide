@@ -122,7 +122,7 @@ Cards land in the project `claude-allow`. If the board cannot be reached, nobody
 | `DECIDE_PASSWORD` | none | Optional web password for phones; without it, log in with the key |
 | `DECIDE_TRUST_PROXY` | `0` | `1` = use `CF-Connecting-IP` / `X-Forwarded-For` for login rate limiting |
 | `DECIDE_SERVE_STATIC` | `1` | `0` = your reverse proxy serves `web/` and media itself |
-| `DECIDE_ASR_URL` / `DECIDE_ASR_MODEL` | none / `whisper-1` | Hold-to-talk speech-to-text: an OpenAI-compatible `/v1/audio/transcriptions` endpoint, or a `/v1/chat/completions` one that takes `input_audio` (e.g. Qwen3-ASR on llama.cpp); without it the mic buttons are hidden. Needs `ffmpeg` on the server (audio is converted to 16 kHz WAV, never stored). Chinese, English and Japanese are detected automatically; silent recordings are rejected before they reach the model |
+| `DECIDE_ASR_URL` / `DECIDE_ASR_MODEL` | none / `whisper-1` | Hold-to-talk speech-to-text: an OpenAI-compatible `/v1/audio/transcriptions` endpoint, or a `/v1/chat/completions` one that takes `input_audio`; comma-separate several URLs and the next one is tried when one is down (e.g. Qwen3-ASR on llama.cpp); without it the mic buttons are hidden. Needs `ffmpeg` on the server (audio is converted to 16 kHz WAV, never stored). Chinese, English and Japanese are detected automatically; silent recordings are rejected before they reach the model |
 | `DECIDE_ASR_HOTWORDS` | none | Extra terms passed to the speech model as context, on top of English words used on at least two recent cards, so product and model names in mixed Chinese–English speech come out spelled correctly |
 | `DECIDE_LLM_URL` / `DECIDE_LLM_MODEL` / `DECIDE_LLM_KEY_FILE` | none | OpenAI-compatible `/chat/completions` endpoint for "search by meaning" on the decided list (Enter in the search box); the key is read from a file at request time. Only text summaries are sent. Without it, search is lexical + fuzzy only |
 
@@ -287,7 +287,7 @@ bin/decide ask -p demo -t "T12 杯子特写 · 手柄朝右" --before old.jpg --
 
 - 服务端默认只听 `127.0.0.1:8796`，数据放 `./data`；对外用时设 `DECIDE_PUBLIC=https://你的域名`、`DECIDE_TRUST_PROXY=1`，再设一个 `DECIDE_PASSWORD` 方便手机登录。
 - 命令行默认连 `http://127.0.0.1:8796`；连远端服务就设 `DECIDE_BASE` 和 `DECIDE_KEY`，或写进 `~/.config/decide/config.json`。
-- **按住说话**：设 `DECIDE_ASR_URL`（OpenAI 兼容的 `/v1/audio/transcriptions`，如自建 Whisper / Qwen3-ASR）才显示话筒；服务器要有 `ffmpeg`，录音转成 16 kHz WAV 送去转写，不落盘。地址以 `/v1/chat/completions` 结尾时按对话接口送音频（`input_audio`，llama.cpp 跑 Qwen3-ASR 就这么接）。中文、英文、日语自动识别；`DECIDE_ASR_HOTWORDS` 加上板上近期常出现的英文词会作为上下文送给模型，中英夹着说时模型名、产品名照原样写；录进去是静音直接提示，不送模型。
+- **按住说话**：设 `DECIDE_ASR_URL`（OpenAI 兼容的 `/v1/audio/transcriptions`，如自建 Whisper / Qwen3-ASR）才显示话筒（逗号隔开可写几个，前一个连不上就换下一个）；服务器要有 `ffmpeg`，录音转成 16 kHz WAV 送去转写，不落盘。地址以 `/v1/chat/completions` 结尾时按对话接口送音频（`input_audio`，llama.cpp 跑 Qwen3-ASR 就这么接）。中文、英文、日语自动识别；`DECIDE_ASR_HOTWORDS` 加上板上近期常出现的英文词会作为上下文送给模型，中英夹着说时模型名、产品名照原样写；录进去是静音直接提示，不送模型。
 - **已定搜索**：边打边搜是本地的字面 + 模糊匹配；设了 `DECIDE_LLM_URL`、`DECIDE_LLM_MODEL`、`DECIDE_LLM_KEY_FILE`（OpenAI 兼容的 `/chat/completions`，key 放在 600 权限的文件里）后，搜索框里回车按意思找，只发文字摘要。
 - **在对话里说提醒**：板上点了「在对话里说」、那个 Claude 会话 15 分钟没发消息，板上顶部出红条并弹系统通知；`decide hook prompt` 钩子负责停表。
 - **派活入口**：`$DECIDE_HOME/intake.json` 存在才在顶栏出现（每次现读，路径可用 `DECIDE_INTAKE_CONF` 改）。写 `{"dir": "收件箱目录"}` 就每件落一个子目录（`item.json` + `files/`，写完才改名）；写 `{"gateway": "…", "token": "…", "capability": "route.intake"}` 就经任务网关的 `POST /v1/files`、`POST /v1/jobs` 交件。附件单个 95 MB 以内、一次最多 30 个；令牌只放服务器，权限给到最小。

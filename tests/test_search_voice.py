@@ -328,5 +328,49 @@ class ChatAsrTest(Base):
         self.assertEqual((code, j["text"]), (200, ""))
 
 
+
+class Down(BaseHTTPRequestHandler):
+    """主机的转写停了：只记被找过几次，回 503。"""
+    hits = 0
+
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        Down.hits += 1
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        self.send_response(503)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+
+class FallbackAsrTest(Base):
+    """写了几个转写地址：第一个报错 / 连不上就换下一个，刚失败的 60 秒内先跳过（主机临时停了转写）。"""
+
+    @classmethod
+    def env_for(cls, tmp):
+        cls.fake = ThreadingHTTPServer(("127.0.0.1", 0), Fake)
+        cls.down = ThreadingHTTPServer(("127.0.0.1", 0), Down)
+        for srv in (cls.fake, cls.down):
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+        d, u = (f"http://127.0.0.1:{x.server_address[1]}" for x in (cls.down, cls.fake))
+        return {"DECIDE_ASR_URL": f"{d}/v1/chat/completions, {u}/asr/v1/chat/completions", "DECIDE_ASR_MODEL": "qwen3-asr"}
+
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        cls.fake.shutdown()
+        cls.down.shutdown()
+
+    def test_falls_back_to_next(self):
+        FAKE["chat_reply"] = ""
+        n = len(FAKE["asr"])
+        for _ in range(2):
+            code, j = self.req("/api/voice", "POST", raw=tone_wav(), ctype="audio/wav")
+            self.assertEqual((code, j["text"]), (200, "收到 wav"), j)
+        self.assertEqual(len(FAKE["asr"]), n + 2)
+        self.assertEqual(Down.hits, 1)  # 第二句直接找备机，不再先等主机
+
+
 if __name__ == "__main__":
     unittest.main()
