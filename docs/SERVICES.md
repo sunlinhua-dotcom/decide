@@ -35,7 +35,7 @@
 |---|---|
 | 做什么 | 板上话筒录的音 → 文字，填进意见框（不自动提交） |
 | 我们用的 | `llama.cpp` 的 `llama-server` 跑 Qwen3-ASR-1.7B（Q8_0 GGUF + mmproj），GPU 全卸载；前面一个很薄的兼容代理，把模型输出开头的 `language XXX<asr_text>` 去掉 |
-| 接法 | `DECIDE_ASR_URL` 指向 `/v1/audio/transcriptions`（Whisper 一类），或指向 `/v1/chat/completions`（Qwen3-ASR 这类，音频按 `input_audio` 送） |
+| 接法 | `DECIDE_ASR_URL` 指向 `/v1/audio/transcriptions`（Whisper 一类），或指向 `/v1/chat/completions`（Qwen3-ASR 这类，音频按 `input_audio` 送）；逗号隔开可写备机，前一个连不上就换下一个，刚失败的 60 秒内先跳过 |
 | 热词 | `DECIDE_ASR_HOTWORDS`（逗号 / 顿号分隔）+ 板上近 30 天至少两张卡说过的英文词（带版本号的排前，路径里的目录名、v2、MB 这类不算），自动作为上下文送给模型：对话接口放在 system 里，转写接口放在 `prompt`。中英夹着说时英文专名（模型名、产品名、命令）照原样写，不变成同音中文 |
 | 语言 | 中文、英文、日语自动识别，不用切换 |
 | 静音 | 录进去的峰值低于 -50 dBFS 直接报「没录到声音」，不送模型：不带上下文的模型对着静音会编出一整句话 |
