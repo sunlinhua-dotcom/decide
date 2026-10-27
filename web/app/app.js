@@ -1519,7 +1519,7 @@ async function voPress(btn, deliver, tap) {
   if (!tap) { window.addEventListener('pointerup', up); window.addEventListener('pointercancel', up); }
   document.body.classList.add('voicing');
   let stream;
-  try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
+  try { stream = await voOpen(); }
   catch (e) {
     up(); voReset();
     return toast(e.name === 'NotAllowedError' ? '没拿到话筒权限：在浏览器里允许使用麦克风后再按'
@@ -1539,6 +1539,25 @@ async function voPress(btn, deliver, tap) {
   try { navigator.vibrate?.(20); } catch {}  // 手机上震一下：真开始录了
   btn.classList.add('on'); document.body.classList.add('voicing'); voPaint(); voLevel(stream);
   VO.timer = setInterval(() => { voPaint(); if (Date.now() - VO.t0 >= 60000) voStop(); }, 250);
+}
+// 10-27：Mac 装了向日葵 / BlackHole 这类虚拟声卡，iPhone 话筒一断，浏览器的默认话筒会落到虚拟声卡上，录下来全是静音。
+// 打开后看一眼是哪支，是虚拟的就换成真话筒（优先电脑自带的）；没有真话筒就照用，报错时说出用的是哪支
+const VIRT_MIC = /oray|blackhole|virtual|loopback|soundflower|vb-audio|voicemeeter|zoomaudiodevice|teams audio|background music/i;
+async function voOpen() {
+  const opt = { echoCancellation: true, noiseSuppression: true };
+  const s = await navigator.mediaDevices.getUserMedia({ audio: opt });
+  VO.mic = s.getAudioTracks()[0]?.label || '';
+  if (!VIRT_MIC.test(VO.mic)) return s;
+  const mics = (await navigator.mediaDevices.enumerateDevices().catch(() => []))
+    .filter(d => d.kind === 'audioinput' && d.label && !['default', 'communications', ''].includes(d.deviceId) && !VIRT_MIC.test(d.label));
+  const pick = mics.find(d => /macbook|built-in|内建|内置/i.test(d.label)) || mics[0];
+  if (!pick) return s;
+  try {
+    const s2 = await navigator.mediaDevices.getUserMedia({ audio: { ...opt, deviceId: { exact: pick.deviceId } } });
+    s.getTracks().forEach(t => t.stop());
+    VO.mic = s2.getAudioTracks()[0]?.label || pick.label;
+    return s2;
+  } catch { return s; }
 }
 function voReset() { clearTimeout(VO.openT); VO.btn = null; VO.mode = ''; voLevelOff(); document.body.classList.remove('voicing'); }
 function voStop(cancel) {
@@ -1568,7 +1587,7 @@ async function voSend(type) {
     const r = await fetch('/api/voice', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': blob.type || 'audio/webm' }, body: blob, signal: ab.signal });
     if (r.status === 401) { location.reload(); return; }
     const j = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(j.error || '识别失败（' + r.status + '）');
+    if (!r.ok) throw new Error((j.error || '识别失败（' + r.status + '）') + (r.status === 422 && VO.mic ? `。这次录的是「${VO.mic}」，在地址栏的话筒图标里换一支` : ''));
     const t = String(j.text || '').trim();
     if (!t) toast('没听清，再说一次'); else deliver(t);
   } catch (e) { toast(e.name === 'AbortError' ? '转文字超时了，再说一次' : e.message || '识别失败'); }
