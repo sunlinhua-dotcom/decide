@@ -198,10 +198,27 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .tt p { font-size: 13px; color: var(--ink-3); margin-top: 6px; }
 .tt .proj { font-size: 12px; color: var(--ink-3); margin-bottom: 6px; display: block; }
 .tt .links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-.tt .links a { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-height: 32px; padding: 0 14px; border: 1px solid var(--line); border-radius: 999px; background: #fbfaf7; color: var(--ink); font-size: 14px; text-decoration: none; transition: border-color .15s, background .15s; }
-.tt .links a:hover, .tt .links a:focus-visible { border-color: var(--ink); background: #fff; }
-.tt .links .lk-i { color: var(--red); font-size: 13px; }
+.tt .links a { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; min-height: 40px; padding: 0 16px; border: 1px solid var(--ink); border-radius: 10px; background: var(--ink); color: #fff; font-size: 15px; font-weight: 500; text-decoration: none; transition: background .15s, color .15s; }
+.tt .links a:hover, .tt .links a:focus-visible { background: #000; }
+.tt .links .lk-i { font-size: 14px; }
 .tt .links .lk-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tt .links .lk-h { font-size: 12px; font-weight: 400; color: rgba(255, 255, 255, .62); white-space: nowrap; }
+/* 点开过的链接退回浅色描边，没点开过的带红点「没打开过」（「选题页」这类要先看的网页容易漏看） */
+.tt .links a.seen { background: #fbfaf7; color: var(--ink); }
+.tt .links a.seen:hover, .tt .links a.seen:focus-visible { background: #fff; }
+.tt .links a.seen .lk-h { color: var(--ink-3); }
+.lk-new { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 500; color: #ffb3a6; white-space: nowrap; }
+.lk-new::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--red); }
+.seen .lk-new { display: none; }
+/* 没图的文字题：第一个链接放在选项上方，一整条，先看网页再选 */
+.lkhero { display: flex; align-items: center; flex-wrap: wrap; column-gap: 6px; row-gap: 2px; width: 100%; max-width: 1180px; margin: 0 auto 14px; padding: 14px 22px; border-radius: 14px; background: var(--ink); color: #fff; text-decoration: none; transition: background .15s; }
+.lkhero:hover, .lkhero:focus-visible { background: #000; }
+.lkhero .lh-k { font-size: 16px; color: rgba(255, 255, 255, .75); }
+.lkhero .lh-t { font-size: 21px; font-weight: 500; }
+.lkhero .lh-s { display: inline-flex; align-items: center; gap: 10px; margin-left: 8px; font-size: 13px; color: rgba(255, 255, 255, .6); }
+.lkhero .lh-i { margin-left: auto; font-size: 22px; }
+.lkhero.seen { background: #fbfaf7; color: var(--ink); border: 1px solid var(--ink); }
+.lkhero.seen .lh-k, .lkhero.seen .lh-s { color: var(--ink-3); }
 .acts { display: flex; gap: 10px; align-items: center; }
 .b { height: 46px; min-width: 104px; padding: 0 24px; border-radius: 999px; border: 1px solid var(--ink); font-size: 15px; letter-spacing: .04em; white-space: nowrap; transition: background .15s, color .15s; }
 .b:hover { background: var(--paper-3); }
@@ -241,6 +258,7 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .rail button:hover { opacity: .85; }
 .rail button.on { opacity: 1; border-bottom-color: var(--ink); }
 .rail img { width: 46px; height: 30px; object-fit: cover; display: block; background: var(--paper-3); }
+.rail .lkb { position: absolute; top: -5px; right: -5px; width: 17px; height: 17px; border-radius: 50%; background: var(--red); color: #fff; font-size: 11px; font-style: normal; line-height: 17px; text-align: center; }
 .rail .ph { width: 46px; height: 30px; background: var(--paper-3); display: flex; align-items: center; justify-content: center; font-family: var(--num); font-size: 15px; }
 
 .empty { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 10px; }
@@ -254,6 +272,7 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .qh { display: flex; align-items: baseline; gap: 10px; padding: 12px 18px 0; font-size: 12px; color: var(--ink-3); }
 .qh select { font: inherit; font-size: 13px; color: var(--ink); background: none; border: 0; padding: 0; cursor: pointer; }
 .q .focus { height: auto; min-height: 0; padding: 10px 18px 14px; }
+.q .qb { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }  /* 格子装不下就在格子里滚，不再压到下一格 */
 .q .seq { font-size: 46px; }
 .q .tt h1 { font-size: 18px; }
 .q .acts.noting { width: 100%; }
@@ -262,6 +281,11 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .q .facts { padding-top: 8px; font-size: 12px; }
 .q .facts .keys { display: none; }
 .q .empty h2 { font-size: 22px; }
+/* 四宫格：链接压成一行可横滑；选项按格子宽度自动折成两列，不再四张挤一排 */
+.q .tt .links { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin-top: 8px; }
+.q .tt .links a { flex: none; min-height: 32px; padding: 0 12px; font-size: 13px; max-width: 70%; }
+.q .tt .links .lk-h { display: none; }
+.q .tiles { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
 
 /* 已定 */
 .page { max-width: 1080px; margin: 0 auto; padding: 34px var(--pad) 60px; }
@@ -427,7 +451,8 @@ pre code { white-space: pre; }
   .focus.sheet > .info .tt h1, .focus.sheet > .info .tt h1.long { font-size: 16.5px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
   .focus.sheet > .info .tt p { margin-top: 2px; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .focus.sheet > .info .tt .links { flex-wrap: nowrap; overflow-x: auto; margin-top: 6px; scrollbar-width: none; }
-  .focus.sheet > .info .tt .links a { min-height: 28px; font-size: 13px; flex: none; max-width: 70vw; }
+  .focus.sheet > .info .tt .links a { min-height: 34px; padding: 0 12px; font-size: 14px; flex: none; max-width: 78vw; }
+  .focus.sheet > .info .tt .links .lk-h { display: none; }
   .focus.sheet > .info .acts { position: static; grid-column: 1 / -1; border: 0; box-shadow: none; background: none; padding: 8px 0; padding-bottom: max(10px, env(safe-area-inset-bottom)); }
   .focus.sheet .stage.multi { height: max(34vh, min(62vh, calc(100dvh - var(--sheet, 200px) - 96px))); }
   .focus.sheet .frame { max-height: max(30vh, min(60vh, calc(100dvh - var(--sheet, 200px) - 120px))); }
@@ -466,10 +491,16 @@ pre code { white-space: pre; }
   .qstage:not(.has-fig):not(.pics) .tile { min-height: 0; padding: 14px 20px 14px; gap: 6px; }
   .qstage:not(.has-fig):not(.pics) .tile-t { font-size: 21px; }
   .qstage:not(.has-fig):not(.pics) .tile-d { font-size: 13.5px; }
-  /* 「要改…」挪到右下角和说明同一行，不再单独占一截高度 */
-  .qstage:not(.has-fig):not(.pics) .tilew.has-rv > .tile { padding-bottom: 14px; padding-right: 100px; }
-  .qstage:not(.has-fig):not(.pics) .tilew.has-rv.has-mic > .tile { padding-right: 190px; }
-  .qstage:not(.has-fig):not(.pics) .tilew > .rvg { right: 16px; bottom: 14px; }
+  /* 「要改…」挪到右下角和说明同一行，不再单独占一截高度——只在卡够宽时这样排：
+     一排 4 张（每张 285 px）时右边让出 190 px，文字只剩 73 px 一条；窄卡按钮放底部一行 */
+  .qstage:not(.has-fig):not(.pics) .tilew { container-type: inline-size; }
+  .qstage:not(.has-fig):not(.pics) .tilew.has-rv > .tile { padding-bottom: 46px; }
+  .qstage:not(.has-fig):not(.pics) .tilew > .rvg { right: 16px; bottom: 12px; }
+  @container (min-width: 520px) {
+    .qstage:not(.has-fig):not(.pics) .tilew.has-rv > .tile { padding-bottom: 14px; padding-right: 100px; }
+    .qstage:not(.has-fig):not(.pics) .tilew.has-rv.has-mic > .tile { padding-right: 190px; }
+    .qstage:not(.has-fig):not(.pics) .tilew > .rvg { bottom: 14px; }
+  }
   .qstage:not(.has-fig):not(.pics) .tilew > .rvg .rv { padding: 5px 11px; font-size: 12px; }
   .qstage:not(.has-fig):not(.pics) .tilew > .rvg .mic { height: 25px; min-width: 25px; font-size: 12px; }
   .qstage:not(.has-fig):not(.pics) .tilew.slim > .tile { padding: 10px 20px; }

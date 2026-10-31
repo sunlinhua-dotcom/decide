@@ -388,7 +388,7 @@ function stageEl(c, ctx, o) {
   const side = has && (c.options || []).length <= 9;
   const fig = c.plan ? (figIdx(c).length ? planMix(c, ctx, mediaStage(c, ctx, o, figIdx(c))) : planEl(c, ctx))
     : figIdx(c).length ? mediaStage(c, ctx, o, figIdx(c)) : c.code ? codeEl(c) : null;
-  const q = h('div', { class: 'qstage' + (has ? ' has-fig' : '') + (side ? ' side' : '') + (hasPics(c) ? ' pics' : '') + (c.plan ? ' planq' : '') }, fig, tilesEl(c, ctx));
+  const q = h('div', { class: 'qstage' + (has ? ' has-fig' : '') + (side ? ' side' : '') + (hasPics(c) ? ' pics' : '') + (c.plan ? ' planq' : '') }, fig, lkHero(c, o), tilesEl(c, ctx));
   // 方案没有固定宽高比（ars 为空）：求解器取放得下全部选项的最窄右栏，剩下的都给方案文字
   // 方案 + 视频 / 照片：媒体只拿到方案旁边那一栏，按那一栏的宽度算它能画多大（九个长选项把右栏撑宽时，照片会被挤到几十 px）
   if (side) sideFit(q, c.plan && !figIdx(c).length ? [] : figIdx(c).map(i => { const m = c.media[i]; return m.w && m.h ? m.w / m.h : 16 / 9; }),
@@ -586,20 +586,50 @@ function infoEl(c, ctx, o) {
       // 35 字以上再小一档（36 字的标题曾折成四行）
       h('h1', { class: [...(c.title || '')].length > 34 ? 'long xlong' : [...(c.title || '')].length > 30 ? 'long' : null }, hl(c.title)),
       c.sub ? h('p', null, hl(c.sub)) : null,
-      o.compact ? null : linksEl(c),
+      linksEl(c, o),  // 四宫格里也显示链接：要先看网页的卡在副屏上不能看不出来
       o.review ? rvAnsEl(c) : null),
     o.review ? rvActs(c, ctx) : actsEl(c, ctx));
 }
 
 // 完成卡里做完的站点、版本页：图里写的网址点不了，单独排一行可点的链接（450）
-function linksEl(c) {
-  const ls = c.links || [];
+// 原来是和标题同色的小药丸，「选题页已上线，看完再挑」这种要先看网页的卡容易漏看——
+// 改深色按钮 + 网址，没点开过的标「没打开过」（这台设备记住点过哪些）；没图的文字题第一个链接放到选项上方（lkHero）
+let lkSeen;
+function lkSeenSet() {
+  if (!lkSeen) try { lkSeen = new Set(JSON.parse(localStorage.getItem('decide-lk') || '[]')); } catch { lkSeen = new Set(); }
+  return lkSeen;
+}
+function lkMark(url) {
+  const s = lkSeenSet(); s.delete(url); s.add(url);
+  try { localStorage.setItem('decide-lk', JSON.stringify([...s].slice(-300))); } catch {}
+  $$('[data-lk]').forEach(a => { if (a.dataset.lk === url) a.classList.add('seen'); });
+}
+function lkName(l) {
+  let host = '', name = l.t;
+  try { const u = new URL(l.url); host = u.host; if (!name) name = (u.host + u.pathname).replace(/\/$/, ''); } catch { if (!name) name = l.url; }
+  return { name, host: l.t && host !== name ? host : '' };  // 没给名字时名字就是网址，不再重复列域名
+}
+// 四宫格格子太矮，不放大横条，链接都留在标题下一行
+const lkHeroOf = (c, o) => !o?.compact && (c.links || []).length && !figIdx(c).length && !c.code && !c.plan && tileMode(c) ? c.links[0] : null;
+function lkA(l, cls, kids) {
+  return h('a', { class: cls + (lkSeenSet().has(l.url) ? ' seen' : ''), href: l.url, target: '_blank', rel: 'noopener noreferrer', title: l.url, 'data-lk': l.url,
+    onclick: e => { e.stopPropagation(); lkMark(l.url); } }, kids);
+}
+function linksEl(c, o) {
+  const hero = lkHeroOf(c, o), ls = (c.links || []).filter(l => l !== hero);
   if (!ls.length) return null;
   return h('div', { class: 'links' }, ls.map(l => {
-    let name = l.t;
-    if (!name) try { const u = new URL(l.url); name = (u.host + u.pathname).replace(/\/$/, ''); } catch { name = l.url; }
-    return h('a', { href: l.url, target: '_blank', rel: 'noopener noreferrer', title: l.url, onclick: e => e.stopPropagation() }, h('span', { class: 'lk-i', 'aria-hidden': 'true' }, '↗'), h('span', { class: 'lk-t' }, name));
+    const { name, host } = lkName(l);
+    return lkA(l, 'lk', [h('span', { class: 'lk-i', 'aria-hidden': 'true' }, '↗'), h('span', { class: 'lk-t' }, name),
+      host ? h('span', { class: 'lk-h' }, host) : null, h('span', { class: 'lk-new' }, '没打开过')]);
   }));
+}
+function lkHero(c, o) {
+  const l = lkHeroOf(c, o);
+  if (!l) return null;
+  const { name, host } = lkName(l);
+  return lkA(l, 'lkhero', [h('span', { class: 'lh-k' }, '先打开'), h('span', { class: 'lh-t' }, '「' + name + '」'), h('span', { class: 'lh-k' }, '看完再选'),
+    h('span', { class: 'lh-s' }, [host, h('span', { class: 'lk-new' }, '没打开过')]), h('span', { class: 'lh-i', 'aria-hidden': 'true' }, '↗')]);
 }
 
 function actsEl(c, ctx) {
@@ -651,7 +681,8 @@ function railEl(q, ctx) {
   return h('nav', { class: 'rail', 'aria-label': '待定队列' }, q.map(c => {
     const m = (c.media || []).find(x => x.kind === 'img');
     return h('button', { class: c.id === id ? 'on' : '', type: 'button', title: pad(c.seq) + ' ' + c.title, onclick: () => { S.cur[ctx.key] = c.id; render(); } },
-      m ? h('img', { src: m.thumb || m.src, alt: '', loading: 'lazy' }) : h('span', { class: 'ph' }, pad(c.seq)));
+      m ? h('img', { src: m.thumb || m.src, alt: '', loading: 'lazy' }) : h('span', { class: 'ph' }, pad(c.seq)),
+      (c.links || []).length ? h('i', { class: 'lkb', title: '这张有网页要看', 'aria-hidden': 'true' }, '↗') : null);
   }));
 }
 
