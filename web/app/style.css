@@ -196,6 +196,7 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .seq { font-family: var(--num); font-size: 68px; line-height: .74; letter-spacing: -.02em; }
 .tt h1 { font-family: var(--zh); font-size: 25px; line-height: 1.25; }
 .tt p { font-size: 13px; color: var(--ink-3); margin-top: 6px; }
+.tt p.tsub { font-size: 16px; line-height: 1.6; color: var(--ink-2); margin-top: 8px; max-width: 52em; }  /* 长标题切下来的后半段：正文字号、深灰，看得清 */
 .tt .proj { font-size: 12px; color: var(--ink-3); margin-bottom: 6px; display: block; }
 .tt .links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .tt .links a { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; min-height: 40px; padding: 0 16px; border: 1px solid var(--ink); border-radius: 10px; background: var(--ink); color: #fff; font-size: 15px; font-weight: 500; text-decoration: none; transition: background .15s, color .15s; }
@@ -246,9 +247,15 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .nbtns .tx { font-size: 13px; color: var(--ink-3); }
 .nbtns .tx:hover { color: var(--ink); }
 
-.facts { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 28px; padding-top: 14px; font-size: 12.5px; color: var(--ink-3); }
+.facts { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 28px; padding-top: 14px; font-size: 13.5px; color: var(--ink-2); }
+/* 补充信息一多（6 条候选 + 一整段任务原文，共 322 px）选项排被挤到 6 px、整排压在补充信息底下：
+   桌面上补充信息限高，超出在框里滚，选项永远露在外面；字也从浅灰 12.5 px 调深调大（1280×650 视口） */
+@media (min-width: 761px) {
+  .focus > .facts { max-height: 24dvh; overflow-y: auto; overscroll-behavior: contain; align-content: flex-start; scrollbar-width: thin; }
+}
 .facts b { font-weight: 500; color: var(--ink); margin-right: 10px; }
 .facts { min-width: 0; }
+.facts > * { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }  /* 「Ativ（小型轿车5座自挡2箱）」这种长串在 keep-all 下不肯折行，手机上把整页撑到 533 px 宽 */
 /* 快捷键提示一行放不下就省略，不许把整页撑出横向滚动条（401 在 1280 宽撑到 1345） */
 .facts .keys { margin-left: auto; font-size: 12px; color: var(--ink-3); white-space: nowrap; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 

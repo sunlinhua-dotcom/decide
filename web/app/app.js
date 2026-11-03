@@ -577,14 +577,24 @@ function watchSheet(root) {
   sheetRO.observe(info);
 }
 
+// 标题过长（比如把 180 字的结论整段塞进标题：桌面 4 行、手机 9 行，选项和补充信息都被往下挤）：
+// 超过 60 字且前 40 字里有「：」就从这里切开，前半当标题，后半按正文字号排在下面；没有冒号就照旧
+function splitTitle(t) {
+  const cs = [...(t || '')];
+  if (cs.length <= 60) return [t || '', ''];
+  const i = cs.findIndex((ch, k) => k >= 4 && k <= 40 && (ch === '：' || ch === ':'));
+  return i < 0 ? [t, ''] : [cs.slice(0, i).join('').trim(), cs.slice(i + 1).join('').trim()];
+}
 function infoEl(c, ctx, o) {
+  const [tt, tsub] = splitTitle(c.title);
   return h('div', { class: 'info' },
     h('div', { class: 'seq' + (pad(c.seq).length > 3 ? ' w4' : ''), title: '在 Claude 里说「' + pad(c.seq) + ' 返修 …」就能指这一张' }, pad(c.seq)),
     h('div', { class: 'tt' },
       o.compact ? null : h('span', { class: 'proj', style: `--pc:${pcol(c.project)[0]}` }, pname(c.project)),
       // 长标题在手机上字号小一档：三位数编号挤窄了标题列，40 字的标题会折成四行（441）；
       // 35 字以上再小一档（36 字的标题曾折成四行）
-      h('h1', { class: [...(c.title || '')].length > 34 ? 'long xlong' : [...(c.title || '')].length > 30 ? 'long' : null }, hl(c.title)),
+      h('h1', { class: [...tt].length > 34 ? 'long xlong' : [...tt].length > 30 ? 'long' : null }, hl(tt)),
+      tsub ? h('p', { class: 'tsub' }, hl(tsub)) : null,
       c.sub ? h('p', null, hl(c.sub)) : null,
       linksEl(c, o),  // 四宫格里也显示链接：要先看网页的卡在副屏上不能看不出来
       o.review ? rvAnsEl(c) : null),
