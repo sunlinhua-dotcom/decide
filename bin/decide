@@ -572,6 +572,135 @@ def svg_plan(path, loose=False):
     return plan
 
 
+DOC_SAY = r"(台词|对白|字幕|开场字幕|落版字幕|旁白|口播|画外音|VO)\s*[：:]"
+DOC_NOTE = r"(注|备注|说明)\s*[：:]"
+DOC_LEAD = r"(一句话|梗概|故事|logline)\s*[：:]"
+DOC_SHOT = r"(\d{1,2}|[Ss]\d{1,2}|镜\s*\d{1,2}|第[一二三四五六七八九十\d]+镜)\s+\d{1,2}[:：]\d{2}"
+
+
+def doc_role(t, fs, body, top):
+    if fs >= top - 0.01 and top > body:
+        return "h"
+    if re.match(DOC_SHOT, t):
+        return "s"
+    if re.match(DOC_SAY, t):
+        return "say"
+    if re.match(DOC_LEAD, t):
+        return "lead"
+    if re.match(DOC_NOTE, t) or fs < body - 0.5:
+        return "n"
+    if fs > body + 0.5:
+        return "s"
+    return "p"
+
+
+def svg_doc(path):
+    """选项自带的剧本 / 文案稿图（每稿一张、字多）拆成一行行文字，板上用阅读器大字排，不用一张张点开放大。
+    折行接回一句；按字号和行首标签分出标题、镜头、台词、注。流程图、手机界面、带照片的照原样当图。"""
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.parse(path).getroot()
+    except (ET.ParseError, OSError):
+        return None
+    tag = lambda e: e.tag.rsplit("}", 1)[-1]
+    parent = {k: e for e in root.iter() for k in e}
+    txt = lambda e: re.sub(r"\s+", " ", "".join(e.itertext())).strip()
+
+    def attr(e, k):
+        while e is not None:
+            if e.get(k):
+                return e.get(k)
+            e = parent.get(e)
+        return None
+
+    def num(e, k, d=0.0):
+        try:
+            return float(re.sub(r"[^\d.-]", "", attr(e, k) or "") or d)
+        except ValueError:
+            return d
+    texts = [e for e in root.iter() if tag(e) == "text" and txt(e)]
+    total = sum(len(txt(e)) for e in texts)
+    if len(texts) < 8 or total < 150 or any(tag(e) == "image" for e in root.iter()):
+        return None
+    if "marker-end" in ET.tostring(root, "unicode"):
+        return None
+    if 3 * sum(1 for e in texts if attr(e, "text-anchor") == "middle") >= len(texts):
+        return None
+    rows = [(txt(e), num(e, "font-size", 16), attr(e, "fill") or "", num(e, "x"), num(e, "y")) for e in texts]
+    weight = {}
+    for t, fs, *_ in rows:
+        weight[fs] = weight.get(fs, 0) + len(t)
+    body = max(weight, key=weight.get)
+    top = max(fs for _, fs, *_ in rows)
+    label = f"(?:{DOC_SAY}|{DOC_NOTE}|{DOC_LEAD}|{DOC_SHOT}|[·•●▪*\\-–—]|[（(]?\\d+[.、)）])"
+    merged = []
+    for t, fs, fill, x, y in rows:
+        if merged:
+            pt, pfs, pfill, px, py = merged[-1]
+            if (abs(fs - pfs) < 0.5 and fill == pfill and abs(x - px) <= 2 and 0 < y - py <= 1.9 * fs
+                    and not re.search(r"[。！？!?…」』】）)]$", pt) and not re.match(label, t)):
+                sep = " " if re.search(r"[A-Za-z0-9]$", pt) and re.match(r"[A-Za-z0-9]", t) else ""
+                merged[-1] = (pt + sep + t, pfs, pfill, px, y)
+                continue
+        merged.append((t, fs, fill, x, y))
+    lines = [[doc_role(t, fs, body, top), t] for t, fs, *_ in merged]
+    title = next((t for r, t in lines if r == "h"), "")
+    lines = [l for l in lines if not (l[0] == "h" and l[1] == title)]
+    return {"title": title[:200], "lines": [[r, t[:1200]] for r, t in lines[:240]]} if lines else None
+
+
+def text_doc(path):
+    """选项直接给 .md / .txt 稿：# 开头的是标题，其余逐行按行首标签分角色。"""
+    try:
+        raw = open(path, encoding="utf-8").read()
+    except OSError:
+        die(f"读不到稿件：{path}")
+    title, lines, cols = "", [], None
+    for ln in raw.splitlines():
+        t = ln.strip()
+        if not t:
+            continue
+        # markdown 分镜表（| 镜 | 时间 | 画面 | 台词 | 备注 |）：每行拆成镜头头 + 画面 / 台词 / 备注，板上照样排成表
+        if t.startswith("|"):
+            cells = [x.strip() for x in t.strip("|").split("|")]
+            if all(re.fullmatch(r":?-{2,}:?", x) for x in cells if x):
+                continue
+            if cols is None:
+                cols = [("no" if re.fullmatch(r"镜|镜号|镜头号|序号|编号|#|[Nn]o\.?", x) else "tm" if re.search(r"时间|时长|秒|时码", x)
+                         else "say" if re.search(r"台词|字幕|旁白|对白|口播|声音", x) else "n" if re.search(r"备注|注|说明", x)
+                         else "p") for x in cells]
+                continue
+            row = dict.fromkeys(("no", "tm"), "")
+            for k, x in zip(cols, cells):
+                if k in ("no", "tm"):
+                    row[k] = row[k] or x
+                elif x:
+                    row.setdefault(k, []).append(x.replace("<br>", " "))
+            no = re.sub(r"\D", "", row["no"]) or str(sum(1 for r, _ in lines if r == "s") + 1)
+            lines.append(["s", f"{int(no):02d}  {row['tm'] or '-'}"])
+            for k in ("p", "say", "n"):
+                lines += [[k, x] for x in row.get(k, [])]
+            continue
+        cols = None
+        m = re.match(r"(#+)\s*(.*)", t)
+        if m:
+            if len(m.group(1)) == 1 and not title:
+                title = m.group(2).strip()
+            else:
+                lines.append(["s", m.group(2).strip()])
+            continue
+        t = re.sub(r"^[-*]\s+", "", t)
+        r = "s" if re.match(DOC_SHOT, t) else "say" if re.match(DOC_SAY, t) else "lead" if re.match(DOC_LEAD, t) \
+            else "n" if re.match(DOC_NOTE, t) or t.startswith(">") else "p"
+        lines.append([r, t.lstrip("> ").strip()])
+    if not lines:
+        die(f"稿件是空的：{path}")
+    return {"title": title[:200], "lines": [[r, t[:1200]] for r, t in lines[:240]]}
+
+
+DOC_EXT = (".md", ".markdown", ".txt")
+
+
 def plan_pics(plan):
     """千问配图只给密密麻麻的（三节以上、400 字以上）；两栏完成卡、方案确认卡只换网页文字，
     不配图：简单的不需要配图"""
@@ -884,10 +1013,15 @@ def build_spec(a, kind):
             label, path, desc = parts[0].strip(), os.path.expanduser(parts[1]), "::".join(parts[2:])
             idx = len(media_in)
             o = opt_from(label, i)
-            media_in.append({"path": path, "label": o["label"], "caption": desc})
             if any(x["id"] == o["id"] for x in spec["options"]):
                 o["id"] = f"c{i + 1}"
-            o["media"] = idx
+            if path.lower().endswith(DOC_EXT):  # 剧本 / 文案稿直接给文字：板上阅读器排，不当图
+                o["doc"] = text_doc(path)
+                if desc and not o.get("desc"):
+                    o["desc"] = desc
+            else:
+                media_in.append({"path": path, "label": o["label"], "caption": desc})
+                o["media"] = idx
             spec["options"].append(o)
     om = getattr(a, "_opt_media", {})
     for i, o in enumerate(a.opt or []):
@@ -898,6 +1032,8 @@ def build_spec(a, kind):
             x["media"] = om[i]
         if i in getattr(a, "_gen", {}):
             x["gen"] = True
+        if i in getattr(a, "_docs", {}):
+            x["doc"] = a._docs[i]
         spec["options"].append(x)
     for k, v in (("画面产品", a.products), ("上次崩因", a.crash), ("这次改法", a.fix), ("文件", a.file)):
         if v:
@@ -954,6 +1090,13 @@ def cmd_push(a, kind):
                  or "Claude · " + repo_name(), "batch": a.batch or spec.get("batch", "")})
     if a.pname:
         spec["project_name"] = a.pname
+    if not getattr(a, "raw_svg", False):
+        for o in spec.get("options", []):
+            m = o.get("media")
+            if isinstance(m, int) and m < len(media_in) and media_in[m]["path"].lower().endswith(".svg") and not o.get("doc"):
+                d = svg_doc(media_in[m]["path"])
+                if d:  # 剧本 / 文案稿图：板上用阅读器大字排，原图留着能放大看
+                    o["doc"] = d
     plan_jobs, used = [], {o.get("media") for o in spec.get("options", [])}
     if not getattr(a, "raw_svg", False):
         for i, m in enumerate(media_in):
@@ -1056,11 +1199,14 @@ def cmd_q(a):
         die('至少一个选项：decide q "问题" "A::说明" "B::说明"')
     route_gate(a)
     a.title, a.choice, a.opt, a.media = a.question, None, [], list(a.svg or []) + list(a.video or [])
-    pics, gens = [], {}
+    pics, gens, docs = [], {}, {}
     for i, x in enumerate(a.opts):
         parts = x.split("::")
         if len(parts) >= 2 and parts[-1].strip().startswith("@"):
             gens[i] = parts[-1].strip()[1:].strip()
+            parts = parts[:-1]
+        elif len(parts) >= 3 and parts[-1].strip().lower().endswith(DOC_EXT):
+            docs[i] = text_doc(os.path.expanduser(parts[-1].strip()))
             parts = parts[:-1]
         elif len(parts) >= 3 and os.path.isfile(os.path.expanduser(parts[-1])):
             pics.append((i, os.path.expanduser(parts[-1])))
@@ -1079,6 +1225,7 @@ def cmd_q(a):
         print("decide：没配出图命令 DECIDE_GEN_CMD，「@画面」先不出图，只按文字选", file=sys.stderr)
         gens = {}
     a._gen = {i: (a.gen_style + "，" if a.gen_style else GEN_STYLE) + p for i, p in gens.items() if p}
+    a._docs = docs
     if not pics:
         return cmd_push(a, "ask")
     # 选项各带一张图：走 choose，图按选项顺序排
@@ -1464,11 +1611,29 @@ def cmd_replan(a):
             else http(c, "GET", f"/api/cards/{ref}")
         if not card:
             die(f"没有编号 {ref} 的卡片")
+        docs = {}
+        for o in card["options"]:
+            m = (card.get("media") or [None] * 99)[o["media"]] if isinstance(o.get("media"), int) else None
+            if not m or not m["src"].endswith(".svg") or o.get("doc"):
+                continue
+            fd, tmp = tempfile.mkstemp(suffix=".svg")
+            os.close(fd)
+            try:
+                fetch_media(c, m["src"], tmp)
+                d = svg_doc(tmp)
+            finally:
+                os.unlink(tmp)
+            if d:
+                docs[o["id"]] = d
+        if docs:
+            http(c, "POST", f"/api/cards/{card['id']}/docs", {"docs": docs})
+            print(f"{card['seq']:02d}：{len(docs)} 个选项的稿件图换成了阅读器文字")
         used = {o.get("media") for o in card["options"]}
         idx = next((i for i, m in enumerate(card.get("media") or []) if m["src"].endswith(".svg") and i not in used
                     and m.get("role") != "src"), None)
         if idx is None:
-            print(f"{card['seq']:02d}：没有可拆的 SVG 方案图，跳过")
+            if not docs:
+                print(f"{card['seq']:02d}：没有可拆的 SVG 方案图或稿件图，跳过")
             continue
         src = card["media"][idx]["src"]
         fd, tmp = tempfile.mkstemp(suffix=".svg")
