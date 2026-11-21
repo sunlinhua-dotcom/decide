@@ -106,6 +106,16 @@ Cards land in the project `claude-allow`. If the board cannot be reached, nobody
 - `hook prompt` adds any answered-but-undelivered cards to the context of the user's next message.
 - `hook stop` blocks the end of a turn once if there are such answers, or if the session has pending cards that no `listen` / `wait` is watching.
 - Both print nothing on any error.
+
+**Choice buttons on the desktop app's wrap-up card.** In the Claude desktop app a turn can end with a wrap-up card (`mcp__ccd_turn__wrap_up`) that carries its own question and buttons. Those only exist in the app, so the board and your phone never see them. This hook turns such cards back into board questions:
+
+```json
+"PreToolUse": [{ "matcher": "mcp__ccd_turn__wrap_up", "hooks": [{ "type": "command", "command": "/abs/path/decide/bin/decide hook wrapup", "timeout": 10 }] }]
+```
+
+- A wrap-up card with `ask` or `actions` is refused; the reason includes a ready-made `decide q` command for the same question and options.
+- A wrap-up card with only a recap passes through.
+- If the board is not configured or cannot be reached, the card passes through.
 - They also work in Antigravity sessions (`ANTIGRAVITY_CONVERSATION_ID`): the hook reads that client's input and answers with its `injectSteps` / `continue` protocol.
 
 ## Configuration
@@ -280,6 +290,12 @@ bin/decide ask -p demo -t "T12 杯子特写 · 手柄朝右" --before old.jpg --
 - `hook stop`：本轮结束时，有这种答案，或本会话有待定卡却没有 `listen` / `wait` 在听，就拦一次。
 - 出任何错都什么也不输出。
 - Antigravity 会话（`ANTIGRAVITY_CONVERSATION_ID`）同样能用：钩子认得它的输入格式，按它的协议回 `injectSteps` / `continue`。
+
+**桌面 app 收尾卡上的选项**：Claude 桌面 app 的一轮可以用收尾卡（`mcp__ccd_turn__wrap_up`）结束，卡上能带问题和按钮，但这些只在 app 里，板上和手机上看不到。加一个 PreToolUse 钩子（matcher `mcp__ccd_turn__wrap_up`，命令 `decide hook wrapup`，JSON 见上方英文部分）把它们改回板上的题：
+
+- 收尾卡带 `ask` 或 `actions` 就拒绝，理由里给出同一道题、同样选项拼好的 `decide q` 命令。
+- 只写 recap 的收尾卡照常放行。
+- 没配置决策板或连不上时放行。
 
 ## 配置说明
 

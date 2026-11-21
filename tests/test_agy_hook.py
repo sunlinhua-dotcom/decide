@@ -134,6 +134,23 @@ class AgyHookTest(unittest.TestCase):
         self.assertEqual(rc, 0, err)
         self.assertEqual(json.loads(out), {})
 
+    def test_wrapup_with_options_goes_to_decide(self):
+        ask = {"tool_name": "mcp__ccd_turn__wrap_up",
+               "tool_input": {"recap": "改好了。", "ask": "这三处继续只用 DeepSeek，可以吗？",
+                              "actions": [{"label": "可以"}, {"label": "本机助手也要能选"}]}}
+        rc, out, err = self.run_cli(["hook", "wrapup"], stdin_obj=ask)
+        self.assertEqual(rc, 0, err)
+        h = json.loads(out)["hookSpecificOutput"]
+        self.assertEqual(h["permissionDecision"], "deny")
+        self.assertIn("decide q", h["permissionDecisionReason"])
+        self.assertIn("本机助手也要能选", h["permissionDecisionReason"])
+        # 只写 recap 的收尾卡照常放行
+        rc, out, err = self.run_cli(["hook", "wrapup"], stdin_obj={"tool_input": {"recap": "改好了。"}})
+        self.assertEqual((rc, out), (0, ""), err)
+        # decide 连不上就放行，不卡会话
+        rc, out, err = self.run_cli(["hook", "wrapup"], stdin_obj=ask,
+                                    extra_env={"DECIDE_BASE": f"http://127.0.0.1:{free_port()}"})
+        self.assertEqual((rc, out), (0, ""), err)
 
 if __name__ == "__main__":
     unittest.main()
