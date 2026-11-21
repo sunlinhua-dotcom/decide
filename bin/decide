@@ -1022,10 +1022,39 @@ def default_project():
     return p if re.match(r"^[a-z0-9][a-z0-9-]{0,39}$", p or "") else "claude"
 
 
+# 路由题门禁：判官、执行方、出图通道、机器这类模型能自己定的题，推给用户只会让自动流程停下干等。
+# 这类在 Claude 会话里推卡直接拒，提示默认值；确实要问（花钱、推翻用户定过的、用户点名要选）加 --must-ask "理由"。
+# 只拦会话里的模型（CLAUDECODE=1），route305 / rmq 等常驻程序推的卡不受影响。
+ROUTE_GATE = [
+    (r"判官|谁来?看图|用谁看|谁来?判", "判官默认 Sonnet（eye 子代理）；含凭据、私人聊天的帧走 wineye 本地"),
+    (r"(开不开|要不要|开还是关|是否|开启?).{0,6}去油|去油.{0,8}(开不开|要不要|开还是关)|--matte", "去油默认关（--matte off）；画面是人脸特写、用户以往要求开过的才开"),
+    (r"(spkimg|千问|qwen|本地).{0,16}配方|(用|选)哪个配方", "SPKIMG 配方默认 std，用户点名才换"),
+    (r"taste.{0,12}(开不开|要不要|开启|启用)|(开不开|要不要开|是否开启?).{0,8}(taste|skill)|(启用|勾选)哪些.{0,4}skill", "Taste 默认不开；出片 skill 按 VID305 路由自己挑，一句话报出来"),
+    (r"谁来做|谁来执行|派给谁|交给谁|派谁|执行方|谁来办|谁来跑", "执行方按分工表自己定档，一句话报出来；只有 Astra、cc1/cc2 要先问"),
+    (r"哪条通道|哪个通道|出图通道|走哪条|哪个出图|用哪个模型出图", "免费出图通道自己选（默认 OCIMG）；付费通道（302 / KIE / MJ）连同花费问一次，加 --must-ask 花钱"),
+    (r"用哪台|放哪台|哪台跑|在哪台|哪台机器|哪台出|哪台上跑", "机器按默认：重活 asus4060、ffmpeg 走 ffx、大显存推理 395"),
+    (r"搜哪些", "搜索平台自己定（默认 GitHub + X + 网页）"),
+]
+
+
+def route_gate(a):
+    if os.environ.get("CLAUDECODE") != "1" or getattr(a, "must_ask", None):
+        return
+    text = " ".join([a.question or "", a.sub or ""]).lower()
+    if text.startswith("已完成"):  # 完成卡照推，标题里提到判官、Taste 的不算路由题
+        return
+    for pat, hint in ROUTE_GATE:
+        if re.search(pat, text):
+            die(f"这类问题不用推给用户：{hint}。\n"
+                f"自己定，在对话里一句话说明选了什么、为什么；确实要问（花钱 / 推翻用户定过的 / 用户点名要选）"
+                f"加 --must-ask \"理由\" 再推。", code=64)
+
+
 def cmd_q(a):
     """快问：一行推一道选择题。选项写「标签::一句代价」，第三段可带一张图 / SVG：「标签::代价::图.svg」。"""
     if len(a.opts) < 1:
         die('至少一个选项：decide q "问题" "A::说明" "B::说明"')
+    route_gate(a)
     a.title, a.choice, a.opt, a.media = a.question, None, [], list(a.svg or []) + list(a.video or [])
     pics, gens = [], {}
     for i, x in enumerate(a.opts):
@@ -1642,6 +1671,7 @@ def main():
         p.add_argument("--no-rec", action="store_true", help="真分不出高下时才用，--sub 写清按什么挑")
     p = sub.add_parser("q")
     p.add_argument("question")
+    p.add_argument("--must-ask", help="路由类问题确实要用户定时写理由（花钱 / 推翻用户定过的 / 用户点名）")
     p.add_argument("opts", nargs="*")
     p.add_argument("-p", "--project")
     p.add_argument("--pname")
