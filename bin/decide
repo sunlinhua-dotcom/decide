@@ -123,6 +123,8 @@ decide —— 把要用户拍板的事推到 decide 决策板网页，等用户�
   decide doctor                    检查配置、服务、上传通道
   decide hook prompt|stop          Claude Code 钩子（UserPromptSubmit / Stop）：补送已答未送的答案，
                                    待定卡没人在听时提醒挂 listen；连不上服务一律静默放行
+  decide hook wrapup               Claude 桌面 app 收尾卡钩子（PreToolUse，matcher mcp__ccd_turn__wrap_up）：
+                                   收尾卡带选项就拦下，改推 decide q；连不上服务放行
 
 配置（环境变量优先于 ~/.config/decide/config.json，见 config.example.json）
   DECIDE_BASE    决策板地址，默认 http://127.0.0.1:8796
@@ -1444,15 +1446,47 @@ def local_listening(sess):
         return False
 
 
+def hook_wrapup(data):
+    """桌面 app 的收尾卡（mcp__ccd_turn__wrap_up）带 ask / actions 时拦下，改推 decide。
+    收尾卡的选项按钮只在桌面 app 里，副屏和手机上看不到，答案也不进 decide。只写 recap 的收尾卡照常放行；
+    decide 没配置或连不上就放行，不因为 decide 的问题卡住会话。"""
+    inp = data.get("tool_input") or {}
+    ask = str(inp.get("ask") or "").strip()
+    acts = [str((x or {}).get("label") or "").strip() for x in (inp.get("actions") or []) if isinstance(x, dict)]
+    acts = [x for x in acts if x]
+    if not ask and not acts:
+        return 0
+    c = hook_conf()
+    if not c:
+        return 0
+    try:
+        http(c, "GET", "/api/health", timeout=3)
+    except Exception:  # noqa: BLE001
+        return 0
+    import shlex
+    cmd = "decide q " + " ".join(shlex.quote(x) for x in [ask or "下一步？"] + (acts or ["好::按你说的做", "要改::写清哪里要改"]))
+    reason = ("收尾卡带选项不会进 decide：用户在副屏 / 手机上看不到，答案也回不到 decide。\n"
+              "1. 路由题（判官、执行方、通道、机器、实现细节、范围内可逆的下一步）别问，自己定，在 recap 里一句话说明选了什么。\n"
+              f"2. 真要用户定的，推 decide：`{cmd} --rec 1`（选项可写成「标签::一句代价」，推荐项用 --rec 标），"
+              "再用后台命令挂 `decide wait <id>` 或 `decide listen`。\n"
+              "3. 然后重新调用收尾卡，只写 recap、不带 ask / actions，recap 里写一句「副屏上有 1 道题（编号 N）」。")
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                             "permissionDecisionReason": reason}}, ensure_ascii=False))
+    return 0
+
+
 def cmd_hook(a):
     """Claude Code / Antigravity 钩子。会话常说「在等你在 decide 上定」，其实用户早答了：监听死了或没重挂。
     prompt：用户发消息或模型调用前，把已答但没送到本会话的答案塞进上下文。
     stop：本轮要结束时，有答案没送到就拦下补送；有待定卡却没有 listen / wait 在听，就拦下提醒挂监听。
+    wrapup：桌面 app 收尾卡带选项时拦下，改推 decide（见 hook_wrapup）。
     任何错误一律静默放行（退出 0；Antigravity 下输出空 JSON 对象 {}）。"""
     try:
         data = json.load(sys.stdin)
     except ValueError:
         return 0
+    if a.event == "wrapup":
+        return hook_wrapup(data if isinstance(data, dict) else {})
     is_agy = isinstance(data, dict) and "conversationId" in data
     empty = lambda: (print("{}"), 0)[1] if is_agy else 0
     if a.event == "stop" and (data.get("stop_hook_active")
@@ -1902,7 +1936,7 @@ def main():
     p.add_argument("--print", action="store_true")
     sub.add_parser("doctor")
     p = sub.add_parser("hook")
-    p.add_argument("event", choices=["prompt", "stop"])
+    p.add_argument("event", choices=["prompt", "stop", "wrapup"])
     a = ap.parse_args()
     if a.cmd in ("ask", "pick"):
         if a.cmd == "ask" and a.choice:

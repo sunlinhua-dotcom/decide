@@ -54,7 +54,7 @@
 | 项 | 说明 |
 |---|---|
 | 做什么 | 把权限请求、`AskUserQuestion`、计划确认、桌面 app 的「开新会话」提议变成卡；用户发消息或本轮要结束时，把已答但没送到的答案补送进会话 |
-| 文件 | `hooks/decide-permission-hook.mjs`、`hooks/decide-offer-hook.mjs`、`hooks/decide-channel.mjs`；`bin/decide hook prompt|stop` |
+| 文件 | `hooks/decide-permission-hook.mjs`、`hooks/decide-offer-hook.mjs`、`hooks/decide-channel.mjs`；`bin/decide hook prompt|stop|wrapup` |
 | 隐私目录 | `~/.claude/private-roots` 里每行一个根目录；会话目录落在这些根下面时，钩子整个静默退出，什么都不外发 |
 | 其他客户端 | Antigravity 会话（`ANTIGRAVITY_CONVERSATION_ID`）同样能收答案：钩子识别它的输入格式，按它的协议回 `injectSteps` / `continue` |
 | 不能做 | 命令里的密钥在卡片上打码；钩子出任何错都静默放行，不卡住会话 |
