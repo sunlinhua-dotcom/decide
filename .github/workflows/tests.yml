@@ -11,7 +11,7 @@ permissions:
 jobs:
   python:
     name: server + CLI · Python ${{ matrix.python }}${{ matrix.pillow && ' · Pillow' || '' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # Python 3.9 is not provided on newer runner images
     strategy:
       fail-fast: false
       matrix:

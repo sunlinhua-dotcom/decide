@@ -38,7 +38,7 @@ const hover = matchMedia('(hover: hover)').matches;
 
 if (/^#k=/.test(location.hash)) history.replaceState(null, '', location.pathname + location.search);
 
-const S = { ver: 0, skew: 0, loaded: false, projects: [], cards: [], byId: new Map(), cur: {}, multi: new Map(), activeQ: 0, last: null, wide: new Set() };
+const S = { ver: 0, skew: 0, loaded: false, projects: [], cards: [], byId: new Map(), cur: {}, multi: new Map(), activeQ: 0, last: null, wide: new Set(), docCur: new Map() };
 const proj = slug => S.projects.find(p => p.slug === slug);
 const pname = slug => proj(slug)?.name || slug;
 
@@ -119,7 +119,7 @@ async function checkBuild() {
     const html = await (await fetch('/', { cache: 'no-store', credentials: 'same-origin' })).text();
     const v = (html.match(/app\.js\?v=(\d+)/) || [])[1];
     if (!v || v === BUILD) return;
-    if (S.note || phDirty() || $('#lb').classList.contains('on')) { staleSince = staleSince || Date.now(); return; }
+    if (S.note || phDirty() || $('#lb').open) { staleSince = staleSince || Date.now(); return; }
     location.reload();
   } catch {}
 }
@@ -231,6 +231,7 @@ function renderFocus(host, ctx, o) {
   }
   if (ui.id !== c.id || ui.rev !== c.rev) {
     ui.root.classList.toggle('textq', tileMode(c));
+    ui.root.classList.toggle('docq', docOpts(c).length > 0);
     // 手机上带图 / 视频的卡：题目和选项按钮一起钉在底部，图在上面；不然题目排在图下面、被底栏盖住（525）
     ui.root.classList.toggle('sheet', !o.compact && !tileMode(c));
     ui.root.replaceChildren(...kids(stageEl(c, ctx, o), infoEl(c, ctx, o), factsEl(c, o), o.compact ? null : railEl(q, ctx)));
@@ -303,6 +304,7 @@ const mixed = c => (c.options || []).some(x => x.media != null) && figIdx(c).len
 const subjectFigs = c => figIdx(c).filter(i => c.media[i].kind === 'video' || !/\.svg$/i.test(c.media[i].src || '')).length >= 2;
 function tileMode(c) {
   const opts = c.options || [];
+  if (docOpts(c).length) return true;
   if (isPerm(c) && opts.every(x => x.media == null)) return true;
   // 兜底量过：文字题排法把图压到看不清，这张卡改回大图 + 底部按钮
   if (S.wide.has(c.id) && opts.every(x => x.media == null)) return false;
@@ -380,6 +382,7 @@ function planMix(c, ctx, st, pick) {
   return h('div', { class: 'planmix', style: `--mixf:${mixF(c, pick)}fr` }, planEl(c, ctx), st);
 }
 function stageEl(c, ctx, o) {
+  if (docOpts(c).length) return readerEl(c, ctx);
   if (!tileMode(c)) { const st = mediaStage(c, ctx, o); return c.plan ? planMix(c, ctx, st, true) : st; }
   const has = figIdx(c).length > 0 || Boolean(c.code) || Boolean(c.plan);
   // 有示意图：宽屏上选项卡竖排在图右边，图拿满整个高度
@@ -394,6 +397,107 @@ function stageEl(c, ctx, o) {
   if (side) sideFit(q, c.plan && !figIdx(c).length ? [] : figIdx(c).map(i => { const m = c.media[i]; return m.w && m.h ? m.w / m.h : 16 / 9; }),
     c.plan ? mixF(c) : 0);
   return q;
+}
+/* ---------- 稿件阅读器：剧本 / 文案稿做成图当选项，一张张点开放大才看得清，太不方便 ----------
+   选项带全文（doc）的卡：一稿一屏、网页大字排，顶上一排稿名切换，← → 或左右滑换一稿，每稿底下直接选 / 勾选；
+   没有全文的选项（要改、都不要）排在底栏右边。原图还在，「看原图」打开。 */
+const docOpts = c => (c.options || []).filter(x => x.doc && (x.doc.lines || []).length);
+function docCur(c) {
+  const ds = docOpts(c), id = S.docCur.get(c.id);
+  return ds.find(x => x.id === id) || ds.find(x => x.rec) || ds[0];
+}
+/* 分镜稿排成表（排成一段段文字还是看不清，要像分镜表那样清楚）：
+   两个以上「01  0:00–0:04」这种镜头头，就每镜一行：镜 · 时间 ｜ 画面 ｜ 台词 / 字幕 ｜ 备注；手机上每镜一块卡 */
+const SHOT_RE = /^(?:镜\s*|第\s*|[Ss])?(\d{1,2})镜?\s+(\d{1,2}[:：]\d{2}\s*[–—~～-]\s*\d{1,2}[:：]\d{2}|-)\s*(.*)$/;
+const SAY_RE = /^(开场字幕|落版字幕|字幕|台词|对白|旁白|口播|画外音|VO)\s*[：:]\s*/;
+function sayEl(t) {
+  const m = t.match(SAY_RE), k = m && !/^(台词|对白)$/.test(m[1]) ? m[1] : null;
+  const body = (m ? t.slice(m[0].length) : t).replace(/」(?=[^\s，。、；：！？）」』…—])/g, '」\n');
+  return h('p', null, k ? h('span', { class: 'sk' }, k) : null, hl(body));
+}
+function docBody(lines) {
+  const line = ([r, t]) => r === 's' ? h('h3', { class: 'doc-s' }, hl(t)) : h('p', { class: 'doc-' + r }, hl(t));
+  const intro = [], rows = [];
+  let row = null;
+  for (const [r, t] of lines) {
+    if (r === 's') {
+      const m = t.match(SHOT_RE);
+      row = m ? { no: m[1].padStart(2, '0'), tm: m[2] === '-' ? '' : m[2].replace(/\s+/g, '').replace(/：/g, ':'), p: m[3] ? [m[3]] : [], say: [], n: [] } : { sec: t };
+      rows.push(row);
+      continue;
+    }
+    if (!row || row.sec) { (row ? row.after || (row.after = []) : intro).push([r, t]); continue; }
+    (r === 'say' ? row.say : r === 'n' ? row.n : row.p).push(t);
+  }
+  if (rows.filter(x => x.no).length < 2) return lines.map(line);
+  const cell = (cls, k, kids) => h('td', { class: cls, 'data-k': k }, kids);
+  return [intro.map(line), h('table', { class: 'stab' },
+    h('thead', null, h('tr', null, h('th', { class: 'c-no' }, '镜'), h('th', { class: 'c-p' }, '画面'), h('th', { class: 'c-say' }, '台词 / 字幕'), h('th', { class: 'c-n' }, '备注'))),
+    h('tbody', null, rows.map(x => x.sec
+      ? h('tr', { class: 'sec' }, h('td', { colspan: '4' }, h('b', null, hl(x.sec)), (x.after || []).map(line)))
+      : h('tr', null,
+        h('td', { class: 'c-no' }, h('b', null, x.no), h('span', null, x.tm)),
+        cell('c-p', '画面', x.p.map(t => h('p', null, hl(t)))),
+        cell('c-say', '台词 / 字幕', x.say.map(sayEl)),
+        cell('c-n', '备注', x.n.map(t => h('p', null, hl(t.replace(/^(注|备注|说明)\s*[：:]\s*/, '')))))))))];
+}
+function readerEl(c, ctx) {
+  const ds = docOpts(c), cur = docCur(c), i = ds.indexOf(cur), n = ds.length;
+  const sel = S.multi.get(c.id) || new Set(), mine = mineOf(c), pend = c.status === 'pending';
+  const picked = x => sel.has(x.id) || mine.ids.has(x.id);
+  const num = x => (c.options || []).indexOf(x) + 1;
+  const tabs = n > 1 ? h('div', { class: 'dtabs', role: 'tablist', 'aria-label': '稿件' }, ds.map(x =>
+    h('button', { class: 'dtab' + (x === cur ? ' on' : '') + (picked(x) ? ' sel' : ''), role: 'tab', type: 'button', 'aria-selected': String(x === cur),
+      title: x.desc || x.label, onclick: () => docShow(c, ctx, x.id) },
+      h('span', { class: 'dk' }, picked(x) ? '✓' : String(num(x))),
+      h('span', { class: 'dl' }, hl(x.label)),
+      x.rec ? h('b', { class: 'dr' }, '推荐') : null,
+      mine.ids.has(x.id) ? h('span', { class: 'mine' }, mine.tag) : null,
+      x.desc ? h('span', { class: 'dd' }, hl(x.desc)) : null))) : null;
+  const d = cur.doc, m = cur.media != null ? (c.media || [])[cur.media] : null;
+  const body = h('article', { class: 'doc', tabindex: '0', 'aria-label': cur.label },
+    h('header', { class: 'doc-h' },
+      m ? h('button', { class: 'dorig', type: 'button', title: '打开原来那张图', onclick: () => openLb(c, cur.media, ctx) }, '看原图') : null,
+      h('h2', null, hl(d.title || cur.label)),
+      cur.desc ? h('p', { class: 'doc-why' }, cur.rec ? h('b', { class: 'dr' }, '推荐') : null, hl(cur.desc)) : null),
+    docBody(d.lines));
+  if (body.querySelector('.stab')) body.classList.add('tbl');
+  let x0 = null, y0 = null;
+  body.addEventListener('touchstart', e => { if (e.touches.length === 1) { x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; } }, { passive: true });
+  body.addEventListener('touchend', e => {
+    if (x0 == null) return;
+    const dx = e.changedTouches[0].clientX - x0, dy = e.changedTouches[0].clientY - y0; x0 = null;
+    if (Math.abs(dx) > 70 && Math.abs(dy) < 50) docGo(c, ctx, dx < 0 ? 1 : -1);
+  }, { passive: true });
+  const rest = (c.options || []).filter(x => !x.doc);
+  const foot = h('div', { class: 'dfoot' },
+    n > 1 ? h('span', { class: 'dnavs' },
+      h('button', { class: 'dnav', type: 'button', onclick: () => docGo(c, ctx, -1) }, '‹ 上一稿'),
+      h('span', { class: 'dpos' }, `${i + 1} / ${n}`),
+      h('button', { class: 'dnav', type: 'button', onclick: () => docGo(c, ctx, 1) }, '下一稿 ›')) : null,
+    h('span', { class: 'dsp' }),
+    pend ? h('button', { class: 'b dpick' + (picked(cur) ? ' sel' : ' go'), type: 'button', 'data-oid': cur.id, onclick: () => choose(c, cur.id, ctx) },
+      c.multi ? (picked(cur) ? `✓ 已勾选《${cur.label.replace(/^《|》$/g, '')}》` : `勾选这稿`) : '就选这稿') : null,
+    pend ? rest.map(x => h('button', { class: 'b dalt' + (x.style === 'bad' ? ' no' : '') + (sel.has(x.id) ? ' sel' : ''), type: 'button', 'data-oid': x.id,
+      title: x.desc || '', onclick: () => choose(c, x.id, ctx) }, hl(x.label))) : null,
+    pend && c.multi ? h('button', { class: 'b go dok', type: 'button', disabled: !sel.size, onclick: () => submit(c, [...sel], ctx) },
+      sel.size ? `确定（${sel.size} 项）` : '先勾选') : null);
+  return h('div', { class: 'reader' + (n > 1 ? '' : ' one'), 'data-cid': c.id }, tabs, body, foot);
+}
+function docRedraw(c, ctx, keepScroll) {
+  const host = ctxHost(ctx), old = host && host.querySelector(`.reader[data-cid="${c.id}"]`);
+  if (!old) return;
+  const st = keepScroll ? old.querySelector('.doc').scrollTop : 0, tx = (old.querySelector('.dtabs') || {}).scrollLeft || 0;
+  const nr = readerEl(c, ctx);
+  old.replaceWith(nr);
+  nr.querySelector('.doc').scrollTop = st;
+  const tb = nr.querySelector('.dtabs');
+  if (tb) { tb.scrollLeft = tx; const on = tb.querySelector('.on'); if (on && !keepScroll) on.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
+}
+function docShow(c, ctx, oid) { S.docCur.set(c.id, oid); docRedraw(c, ctx, false); }
+function docGo(c, ctx, d) {
+  const ds = docOpts(c), i = ds.indexOf(docCur(c));
+  if (ds.length > 1) docShow(c, ctx, ds[(i + d + ds.length) % ds.length].id);
 }
 /* 一组图在 W×H 里按最佳列数排，能画出的总面积（像素²） */
 function gridArea(ars, W, H, gap, cap) {
@@ -681,7 +785,7 @@ const FACT_NAME = { '画面产品': '产品', '上次崩因': '上次', '这次�
 function factsEl(c, o) {
   const fs = (c.facts || []).filter(([k]) => !/^(文件|路径)/.test(k));
   const rv = (c.options || []).some(x => canRevise(c, x));
-  const keys = hover && !o.compact ? h('span', { class: 'keys' }, (c.options || []).slice(0, 4).map((x, i) => `${i + 1} ${x.label}`).join('　') + (rv ? '　Shift + 数字 选它并写意见' : '') + (c.multi ? '　回车确定' : '') + (isPerm(c) ? '　← → 翻页' : '　W 在这里写意见　C 在对话里说　← → 翻页　Z 撤回')) : null;
+  const keys = hover && !o.compact ? h('span', { class: 'keys' }, (c.options || []).slice(0, 4).map((x, i) => `${i + 1} ${x.label}`).join('　') + (rv ? '　Shift + 数字 选它并写意见' : '') + (c.multi ? '　回车确定' : '') + (isPerm(c) ? '　← → 翻页' : docOpts(c).length > 1 ? '　← → 换一稿　W 在这里写意见　C 在对话里说　Z 撤回' : '　W 在这里写意见　C 在对话里说　← → 翻页　Z 撤回')) : null;
   if (!fs.length && !keys) return null;
   return h('div', { class: 'facts' }, fs.map(([k, v]) => h('span', null, h('b', null, FACT_NAME[k] || k), hl(v))), keys);
 }
@@ -727,6 +831,7 @@ function revise(c, oid, ctx) {
 }
 function refreshActs(c, ctx) {
   const host = ctxHost(ctx);
+  docRedraw(c, ctx, true);
   const t = host && $('.tiles', host);
   if (t) t.replaceWith(tilesEl(c, ctx));
   const a = host && $('.acts', host);
@@ -1276,7 +1381,7 @@ function activeCtx() {
 }
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && ZOOM.img && !e.target.matches('input, textarea, select')) { e.preventDefault(); zoomReset(ZOOM.img); return; }
-  if ($('#lb').classList.contains('on')) return lbKey(e);
+  if ($('#lb').open) return lbKey(e);
   if (e.target.matches('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === '?') { location.href = '/help'; return; }
   if (S.route?.type === 'review') return rvKey(e);
@@ -1287,7 +1392,9 @@ document.addEventListener('keydown', e => {
   if (dg && c) {
     const x = (c.options || [])[+dg[1] - 1];
     if (x && e.shiftKey) { if (canRevise(c, x)) { e.preventDefault(); revise(c, x.id, ctx); } }
-    else if (x) { e.preventDefault(); choose(c, x.id, ctx); }
+    else if (x) { e.preventDefault(); if (x.doc && docOpts(c).length) S.docCur.set(c.id, x.id); choose(c, x.id, ctx); }
+  } else if ((e.key === 'ArrowRight' || e.key === 'ArrowLeft') && c && docOpts(c).length > 1) {
+    e.preventDefault(); docGo(c, ctx, e.key === 'ArrowRight' ? 1 : -1);
   } else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
     e.preventDefault(); step(ctx, e.key === 'ArrowRight' ? 1 : -1);
   } else if ((e.key === 'c' || e.key === 'C') && c && !isPerm(c)) {
@@ -1307,7 +1414,10 @@ document.addEventListener('keydown', e => {
 const fine = matchMedia('(hover: hover) and (pointer: fine)').matches;
 const LOUPE = { el: null, img: null, z: 3 };
 function loupeEl() {
-  if (!LOUPE.el) { LOUPE.el = h('div', { class: 'loupe', 'aria-hidden': 'true' }, h('span', { class: 'z n' })); document.body.append(LOUPE.el); }
+  if (!LOUPE.el) LOUPE.el = h('div', { class: 'loupe', 'aria-hidden': 'true' }, h('span', { class: 'z n' }));
+  // 大图层开着时它在顶层（top layer），圈要挂进去才不会被盖住
+  const host = $('#lb').open ? $('#lb') : document.body;
+  if (LOUPE.el.parentNode !== host) host.append(LOUPE.el);
   return LOUPE.el;
 }
 function hideLoupe() { if (LOUPE.el) LOUPE.el.classList.remove('on'); LOUPE.img = null; }
@@ -1401,21 +1511,46 @@ function attachZoom(img, box, hi, { click = true } = {}) {
 const bigBtn = (open, inBtn) => h(inBtn ? 'span' : 'button', { class: 'zbig', type: inBtn ? null : 'button', role: inBtn ? 'button' : null, title: '打开大图层',
   onclick: e => { e.stopPropagation(); open(); } }, '大图');
 
-/* ---------- 图层看大图（× / 点空白 / Esc 关） ---------- */
+/* ---------- 图层看大图（× / 点空白 / Esc / 安卓返回手势 关） ----------
+   原生 <dialog> + showModal()（modern-web-guidance: dialog、animate-to-from-top-layer）：
+   浏览器负责背后页面变惰性、焦点关在层里、关掉后焦点回到点开它的地方、Esc 与返回手势；不再手写这些。 */
 const LB = { c: null, i: 0, cmp: false, ctx: null, grid: false };
 function openLb(c, i, ctx) {
   hideLoupe(); zoomReset(ZOOM.img);
   Object.assign(LB, { c, i, cmp: false, ctx: ctx || activeCtx(), grid: (c.media || []).length >= 3 });
-  const lb = $('#lb'); lb.hidden = false;
-  void lb.offsetWidth;
-  lb.classList.add('on');
-  document.body.style.overflow = 'hidden';
+  const lb = $('#lb');
+  lb.removeAttribute('data-closing');
+  if (!lb.open) lb.showModal();
   drawLb();
 }
-function closeLb() {
-  const lb = $('#lb'); if (lb.hidden) return;
-  hideLoupe(); zoomReset(ZOOM.img); lb.classList.remove('on'); document.body.style.overflow = '';
-  setTimeout(() => { if (!lb.classList.contains('on')) { lb.hidden = true; $('#lb-stage').replaceChildren(); } }, 180);
+// 退场动画：Chrome 能直接对 display / overlay 做过渡；Safari、Firefox 不行，先挂 data-closing 播完淡出再 close()
+let canDisplayTransition;
+function topLayerExitNative() {
+  if (canDisplayTransition === undefined) {
+    canDisplayTransition = false;
+    if (window.CSS?.supports?.('overlay', 'auto') && CSS.supports('transition-behavior', 'allow-discrete')) {
+      const probe = document.createElement('div');
+      probe.style.cssText = 'transition: display 1s allow-discrete !important; display: block;';
+      document.body.append(probe);
+      getComputedStyle(probe).display;
+      probe.style.display = 'none';
+      canDisplayTransition = getComputedStyle(probe).display === 'block';
+      probe.remove();
+    }
+  }
+  return canDisplayTransition;
+}
+async function closeLb() {
+  const lb = $('#lb'); if (!lb.open || lb.hasAttribute('data-closing')) return;
+  hideLoupe(); zoomReset(ZOOM.img);
+  if (!topLayerExitNative()) {
+    lb.setAttribute('data-closing', '');
+    const anims = lb.getAnimations();
+    if (anims.length) await Promise.race([Promise.allSettled(anims.map(a => a.finished)), new Promise(r => setTimeout(r, 400))]);
+    if (!lb.hasAttribute('data-closing')) return;  // 淡出途中又被打开了
+    lb.removeAttribute('data-closing');
+  }
+  lb.close();
 }
 function lbActs(c, opt) {
   if (c.status !== 'pending' || c.multi) return [];
@@ -1504,11 +1639,17 @@ function drawLbGrid(c, media) {
 }
 function lbStep(d) { const n = (LB.c.media || []).length; if (n < 2 || LB.grid) return; LB.i = (LB.i + d + n) % n; LB.cmp = false; drawLb(); }
 function lbKey(e) {
-  if (e.key === 'Escape') { e.preventDefault(); closeLb(); }
-  else if (e.key === 'ArrowLeft') { e.preventDefault(); lbStep(-1); }
+  if (e.key === 'ArrowLeft') { e.preventDefault(); lbStep(-1); }
   else if (e.key === 'ArrowRight') { e.preventDefault(); lbStep(1); }
 }
 $('#lb-close').onclick = closeLb;
+// Esc、安卓返回手势先到 cancel：拦下来走同一个带淡出的关法（原生 close 会瞬间消失）
+$('#lb').addEventListener('cancel', e => { e.preventDefault(); closeLb(); });
+$('#lb').addEventListener('close', () => {
+  const lb = $('#lb');
+  lb.removeAttribute('data-closing'); hideLoupe(); zoomReset(ZOOM.img);
+  setTimeout(() => { if (!lb.open) $('#lb-stage').replaceChildren(); }, 200);
+});
 $('#lb-prev').onclick = () => lbStep(-1);
 $('#lb-next').onclick = () => lbStep(1);
 $('#lb').addEventListener('click', e => {

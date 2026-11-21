@@ -80,12 +80,19 @@ if not KEY:
 if len(KEY) < 24:
     sys.exit("decide：密钥太短，至少 24 个字符")
 # 网页登录密码（可选）：设了就能在手机上只输密码登录；不设就用密钥登录（decide open 会自动带上）。
-PASSWORD = os.environ.get("DECIDE_PASSWORD", "").strip()
-if not PASSWORD and os.path.exists(PASS_FILE):
-    with open(PASS_FILE) as f:
-        PASSWORD = f.read().strip()
-FAILS = {}            # ip -> [失败时间]
-FAIL_WINDOW, FAIL_PER_IP, FAIL_GLOBAL = 600, 5, 40
+# 每次登录现读密码文件：改密码不用重启服务。不做「连错 N 次锁几分钟」：输错只慢 1.5 秒，访问日志照常记 403。
+
+
+def current_password():
+    pw = os.environ.get("DECIDE_PASSWORD", "").strip()
+    if pw:
+        return pw
+    try:
+        with open(PASS_FILE) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
 
 PALETTE = ["#2f6fdf", "#0f9d8a", "#c2410c", "#7c3aed", "#be185d",
            "#15803d", "#b45309", "#0369a1", "#9f1239", "#4d7c0f"]
@@ -221,6 +228,27 @@ def clean_plan(raw):
     return plan if plan["secs"] or plan["lines"] else None
 
 
+DOC_ROLES = ("h", "s", "lead", "p", "say", "n")
+
+
+def clean_doc(raw):
+    """选项自带的一整篇文字（剧本、文案稿）：{title, lines: [[角色, 字], …]}。
+    板上按一稿一屏的阅读器排，大字可读；角色 h 标题 / s 镜头小标题 / lead 一句话梗概 / p 正文 / say 台词字幕 / n 注。"""
+    if not isinstance(raw, dict):
+        return None
+    lines = raw.get("lines") or []
+    if not isinstance(lines, list) or len(lines) > 240:
+        raise Bad(400, "doc 至多 240 行")
+    doc = {"title": s(raw.get("title"), 200, "doc.title"), "lines": []}
+    for x in lines:
+        if not (isinstance(x, (list, tuple)) and len(x) == 2 and x[0] in DOC_ROLES):
+            raise Bad(400, "doc.lines 每行是 [角色, 字]，角色是 " + " / ".join(DOC_ROLES))
+        t = s(x[1], 1200, "doc.line").strip()
+        if t:
+            doc["lines"].append([x[0], t])
+    return doc if doc["lines"] else None
+
+
 def clean_links(raw):
     """卡上可点的链接（完成卡里做完的站点、版本页等）：[{t, url}]，只收 http / https。"""
     if raw in (None, []):
@@ -326,6 +354,9 @@ def clean_spec(raw):
         pic = clean_pic(o.get("pic"))
         if pic:
             item["pic"] = pic
+        doc = clean_doc(o.get("doc"))
+        if doc:
+            item["doc"] = doc
         spec["options"].append(item)
     plan = clean_plan(raw.get("plan"))
     if plan:
@@ -987,6 +1018,8 @@ class H(BaseHTTPRequestHandler):
                 return self.set_pic(cid)
             if len(p) == 3 and m == "POST" and p[2] == "plan":
                 return self.set_plan(cid)
+            if len(p) == 3 and m == "POST" and p[2] == "docs":
+                return self.set_docs(cid)
             if len(p) == 3 and m == "POST" and p[2] == "links":
                 return self.set_links(cid)
         if p == ["projects"]:
@@ -1064,27 +1097,15 @@ class H(BaseHTTPRequestHandler):
                 left -= len(chunk)
 
     def login(self):
-        ip = self.ip()
-        now = time.time()
-        with lock:
-            for k_ in list(FAILS):
-                FAILS[k_] = [t for t in FAILS[k_] if now - t < FAIL_WINDOW]
-                if not FAILS[k_]:
-                    del FAILS[k_]
-            if len(FAILS.get(ip, [])) >= FAIL_PER_IP or sum(map(len, FAILS.values())) >= FAIL_GLOBAL:
-                raise Bad(429, "试错太多次了，10 分钟后再试")
         raw = self.body_json()
         raw = raw if isinstance(raw, dict) else {}
         pw, k = raw.get("p"), raw.get("k")
-        ok = (isinstance(pw, str) and PASSWORD and hmac.compare_digest(pw.strip(), PASSWORD)) or \
+        password = current_password()
+        ok = (isinstance(pw, str) and password and hmac.compare_digest(pw.strip(), password)) or \
              (isinstance(k, str) and hmac.compare_digest(k.strip(), KEY))
         if not ok:
-            with lock:
-                FAILS.setdefault(ip, []).append(now)
             time.sleep(1.5)
             raise Bad(403, "密码不对")
-        with lock:
-            FAILS.pop(ip, None)
         cookie = f"{COOKIE}={KEY}; Path=/; Max-Age={COOKIE_MAX_AGE}; HttpOnly; SameSite=Lax" + ("; Secure" if COOKIE_SECURE else "")
         self.send(200, {"ok": True}, {"Set-Cookie": cookie})
 
@@ -1301,6 +1322,29 @@ class H(BaseHTTPRequestHandler):
             x.pop("gen", None)
             if pic:
                 x["pic"] = pic
+            now = time.time()
+            db.execute("UPDATE cards SET spec=?, updated=?, rev=rev+1 WHERE id=?",
+                       (json.dumps(spec, ensure_ascii=False), now, cid))
+            bump()
+            self.send(200, card_json(get_card(cid)))
+
+    def set_docs(self, cid):
+        """已经上板的卡给选项补全文（decide replan 用）：{docs: {选项 id: doc}}。"""
+        raw = self.body_json()
+        docs = raw.get("docs") if isinstance(raw, dict) else None
+        if not isinstance(docs, dict) or not docs:
+            raise Bad(400, "docs 是空的")
+        with lock:
+            r = get_card(cid)
+            spec = json.loads(r["spec"])
+            n = 0
+            for o in spec.get("options") or []:
+                d = clean_doc(docs.get(o["id"]))
+                if d:
+                    o["doc"] = d
+                    n += 1
+            if not n:
+                raise Bad(400, "docs 里没有对得上的选项")
             now = time.time()
             db.execute("UPDATE cards SET spec=?, updated=?, rev=rev+1 WHERE id=?",
                        (json.dumps(spec, ensure_ascii=False), now, cid))
